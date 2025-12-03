@@ -68,6 +68,7 @@ graph TB
     end
     
     C -->|HTTP Request| AG
+    AG -->|Auth Check| PG
     AG -->|JWT Validation| AG
     AG -->|Forward Request| PS
     PS -->|SETNX Idempotency| R
@@ -76,6 +77,11 @@ graph TB
     RMQ -->|Consume| OW
     OW -->|Store Order| PG
     
+    C -->|DELETE /order| AG
+    AG -->|Soft Delete| PG
+    AG -->|Restore Stock| PS
+    PS -->|Incr Stock| R
+
     style AG fill:#e1f5fe
     style PS fill:#fff3e0
     style OW fill:#e8f5e9
@@ -83,8 +89,6 @@ graph TB
     style RMQ fill:#f3e5f5
     style PG fill:#e0f2f1
 ````
-
------
 
 ## 🛠️ Core Technologies
 
@@ -97,7 +101,6 @@ graph TB
 | **PostgreSQL** | Persistent order storage |
 | **Docker Compose** | Local orchestration |
 
------
 
 ## 🏁 Quick Start
 
@@ -106,10 +109,14 @@ graph TB
 This automates the entire setup, including database creation and schema initialization.
 
 ```bash
-# 1. Start all services
+# 1. Setup Environment Variables
+# Create the .env file from the example template
+cp .env.example .env
+
+# 2. Start all services
 cd flashsale && docker-compose up --build
 
-# 2. Seed the database (In a new terminal)
+# 3. Seed the database (In a new terminal)
 # This populates initial products and users
 cd scripts && go run seed.go
 ```
@@ -143,7 +150,10 @@ psql -U postgres -c "CREATE DATABASE flashsale;"
 # 3. Initialize Schema (Tables)
 psql -U postgres -d flashsale -f migrations/init.sql
 
-# 4. Seed Data
+# 4. Setup Config
+# Manually create .env or set environment variables in your terminal session
+
+# 5. Seed Data
 cd flashsale\scripts
 go run seed.go
 ```
@@ -281,8 +291,6 @@ curl -X DELETE http://localhost:8080/orders/<ORDER_ID> \
 }
 ```
 
------
-
 ## ⚠️ Failure Test Cases
 
 ### Test Case A: 🔁 Duplicate Purchase (Idempotency)
@@ -393,8 +401,6 @@ curl -X POST http://localhost:8080/auth/login \
 }
 ```
 
------
-
 ## 💾 Database Schema
 
 ```sql
@@ -421,8 +427,6 @@ CREATE TABLE orders (
     created_at TIMESTAMP DEFAULT NOW()
 );
 ```
-
------
 
 ## 📄 License
 
