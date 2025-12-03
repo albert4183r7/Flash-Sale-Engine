@@ -1,73 +1,72 @@
 package handler
 
 import (
+	"database/sql"
 	"net/http"
 	"time"
 
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// User represents a user for authentication
-type User struct {
-	ID       int
-	Email    string
-	Password string
-	Role     string
-}
-
-// DummyUsers for authentication (in production, use a database)
-var DummyUsers = map[string]User{
-	"user@example.com": {
-		ID:       1,
-		Email:    "user@example.com",
-		Password: "password123",
-		Role:     "user",
-	},
-	"admin@example.com": {
-		ID:       2,
-		Email:    "admin@example.com",
-		Password: "admin123",
-		Role:     "admin",
-	},
-	"buyer@example.com": {
-		ID:       3,
-		Email:    "buyer@example.com",
-		Password: "buyer123",
-		Role:     "user",
-	},
-}
-
-// AuthHandler handles authentication requests
 type AuthHandler struct {
+	db        *sql.DB
 	jwtSecret string
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(jwtSecret string) *AuthHandler {
-	return &AuthHandler{jwtSecret: jwtSecret}
+func NewAuthHandler(db *sql.DB, jwtSecret string) *AuthHandler {
+	return &AuthHandler{db: db, jwtSecret: jwtSecret}
 }
 
-// Login handles user login and returns JWT token
-func (h *AuthHandler) Login(c *gin.Context) {
-	var req dto.LoginRequest
+func (h *AuthHandler) Signup(c *gin.Context) {
+	var req dto.LoginRequest // Reusing struct for simplicity, ideally separate
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	user, exists := DummyUsers[req.Email]
-	if !exists || user.Password != req.Password {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "Authentication failed",
-			"error":   "Invalid email or password",
-		})
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	_, err = h.db.Exec("INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'user')", req.Email, string(hashedPassword))
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "User likely already exists"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully"})
+}
+
+func (h *AuthHandler) Login(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var user struct {
+		ID       int
+		Email    string
+		Password string
+		Role     string
+	}
+
+	err := h.db.QueryRow("SELECT id, email, password_hash, role FROM users WHERE email = $1", req.Email).Scan(&user.ID, &user.Email, &user.Password, &user.Role)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
@@ -79,23 +78,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"email":   user.Email,
 		"role":    user.Role,
 		"exp":     expirationTime.Unix(),
-		"iat":     time.Now().Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(h.jwtSecret))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to generate token",
-			"error":   "Internal server error",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Login successful",
+		"token": tokenString,
 		"data": dto.LoginResponse{
 			Token:     tokenString,
 			ExpiresIn: int64(expiresIn.Seconds()),
