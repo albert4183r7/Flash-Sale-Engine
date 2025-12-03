@@ -1,6 +1,8 @@
 package config
 
-import "os"
+import (
+	"os"
+)
 
 // Config holds all configuration for the services
 type Config struct {
@@ -32,17 +34,23 @@ func LoadConfig() *Config {
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
 		RedisDB:            0,
-		RabbitMQURL:        getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
-		PostgresURL:        getEnv("POSTGRES_URL", "postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable"),
-		JWTSecret:          getEnv("JWT_SECRET", "your-super-secret-key-change-in-production"),
+		RabbitMQURL:        getEnv("RABBITMQ_URL", ""), // No default in prod
+		PostgresURL:        getEnv("POSTGRES_URL", ""), // No default in prod
+		JWTSecret:          getEnv("JWT_SECRET", ""),   // No default in prod
 		PurchaseServiceURL: getEnv("PURCHASE_SERVICE_URL", "http://localhost:8081"),
 	}
 }
 
 // getEnv gets an environment variable or returns a default value
 func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	value := os.Getenv(key)
+	if value == "" {
+		if defaultValue == "" {
+			// In a real strict production app, you might want to panic here
+			// log.Printf("Warning: Environment variable %s is not set", key)
+			return ""
+		}
+		return defaultValue
 	}
-	return defaultValue
+	return value
 }
