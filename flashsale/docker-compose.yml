@@ -8,7 +8,14 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    # Use password only if set, otherwise default to no password configuration
+    command: >
+      sh -c '
+      if [ -n "${REDIS_PASSWORD}" ]; then
+        redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}";
+      else
+        redis-server --appendonly yes;
+      fi'
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -44,11 +51,12 @@ services:
     image: postgres:15-alpine
     container_name: flashsale-postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Fallback to 'postgres' if variable is empty (crucial for Docker startup)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -68,7 +76,8 @@ services:
       dockerfile: deployments/Dockerfile.api-gateway
     container_name: flashsale-api-gateway
     ports:
-      - "${PORT:-8080}:8080"
+      # Maps Host Port (from .env) -> Container Port (8080)
+      - "${API_GATEWAY_PORT:-8080}:8080"
     depends_on:
       purchase-service:
         condition: service_started
@@ -80,7 +89,8 @@ services:
     env_file:
       - .env
     environment:
-      # Override host for internal docker networking
+      # Internal container config
+      PORT: 8080
       POSTGRES_HOST: postgres
       PURCHASE_SERVICE_URL: http://purchase-service:8081
 
@@ -90,7 +100,8 @@ services:
       dockerfile: deployments/Dockerfile.purchase-service
     container_name: flashsale-purchase-service
     ports:
-      - "8081:8081"
+      # Maps Host Port (from .env) -> Container Port (8081)
+      - "${PURCHASE_SERVICE_PORT:-8081}:8081"
     depends_on:
       redis:
         condition: service_healthy
@@ -104,6 +115,8 @@ services:
     env_file:
       - .env
     environment:
+      # Internal container config
+      PORT: 8081
       POSTGRES_HOST: postgres
       REDIS_ADDR: redis:6379
 

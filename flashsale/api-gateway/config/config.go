@@ -16,11 +16,11 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		Port:               getEnv("PORT", "8080"),
+		Port:               getEnv("API_GATEWAY_PORT", ""),
 		JWTSecret:          getEnv("JWT_SECRET", ""),
-		PurchaseServiceURL: getEnv("PURCHASE_SERVICE_URL", "http://localhost:8081"),
+		PurchaseServiceURL: getEnv("PURCHASE_SERVICE_URL", ""),
 		PostgresURL:        getEnv("POSTGRES_URL", ""),
-		RateLimitRequests:  100,
+		RateLimitRequests:  120,
 		RateLimitWindow:    60,
 	}
 }
