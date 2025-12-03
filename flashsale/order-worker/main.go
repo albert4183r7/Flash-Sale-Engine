@@ -1,0 +1,52 @@
+package main
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/flashsale/order-worker/config"
+	"github.com/flashsale/order-worker/consumer"
+	"github.com/flashsale/order-worker/postgres"
+	"github.com/flashsale/order-worker/repository"
+)
+
+func main() {
+	log.Println("Starting Order Worker...")
+
+	cfg := config.Load()
+	log.Printf("Configuration loaded")
+
+	pgClient, err := postgres.NewClient(cfg.PostgresURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	}
+	defer pgClient.Close()
+
+	if err := pgClient.InitializeSchema(); err != nil {
+		log.Fatalf("Failed to initialize schema: %v", err)
+	}
+
+	orderRepo := repository.NewOrderRepository(pgClient.DB())
+
+	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderRepo)
+	if err != nil {
+		log.Fatalf("Failed to create RabbitMQ consumer: %v", err)
+	}
+	defer rabbitConsumer.Close()
+
+	go func() {
+		if err := rabbitConsumer.Start(); err != nil {
+			log.Fatalf("Consumer error: %v", err)
+		}
+	}()
+
+	log.Println("Order Worker is running. Press Ctrl+C to stop.")
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down Order Worker...")
+}

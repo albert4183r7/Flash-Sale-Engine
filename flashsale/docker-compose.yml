@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: flashsale-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: flashsale-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: flashsale-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flashsale
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.api-gateway
+    container_name: flashsale-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      JWT_SECRET: "your-super-secret-key-change-in-production"
+      PURCHASE_SERVICE_URL: "http://purchase-service:8081"
+    depends_on:
+      purchase-service:
+        condition: service_started
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+
+  purchase-service:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.purchase-service
+    container_name: flashsale-purchase-service
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+
+  order-worker:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.order-worker
+    container_name: flashsale-order-worker
+    environment:
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/flashsale?sslmode=disable"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+
+networks:
+  flashsale-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  rabbitmq_data:
+  postgres_data:
