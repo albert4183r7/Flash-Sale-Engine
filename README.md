@@ -44,50 +44,43 @@ The system optimizes for high concurrency by offloading writes to memory:
 **4. 💾 Eventual Consistency (Order Worker):** A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL** (Disk-based storage), ensuring data persistence without blocking the user's response time.
 
 ```mermaid
-graph TB
-    subgraph "Client Layer"
-        C[💻 Client/Browser]
+graph TD
+    %% Nodes
+    User((👤 User))
+    AG[🚪 API Gateway]
+    PS[⚡ Purchase Service]
+    W[👷 Order Worker]
+    
+    subgraph Data_Layer [💾 Data Persistence & Queue]
+        DB[(💾 PostgreSQL)]
+        R[(🧠 Redis Cache)]
+        MQ[📨 RabbitMQ]
     end
-    
-    subgraph "API Layer"
-        AG[🚪 API Gateway<br/>Port 8080]
-    end
-    
-    subgraph "Service Layer"
-        PS[⚡ Purchase Service<br/>Port 8081]
-    end
-    
-    subgraph "Worker Layer"
-        OW[👷 Order Worker]
-    end
-    
-    subgraph "Data Layer"
-        R[(🧠 Redis<br/>Stock + Idempotency)]
-        RMQ[(📨 RabbitMQ<br/>Message Queue)]
-        PG[(💾 PostgreSQL<br/>Order Storage)]
-    end
-    
-    C -->|HTTP Request| AG
-    AG -->|Auth Check| PG
-    AG -->|JWT Validation| AG
-    AG -->|Forward Request| PS
-    PS -->|SETNX Idempotency| R
-    PS -->|DECR Stock| R
-    PS -->|Publish Event| RMQ
-    RMQ -->|Consume| OW
-    OW -->|Store Order| PG
-    
-    C -->|DELETE /order| AG
-    AG -->|Soft Delete| PG
-    AG -->|Restore Stock| PS
-    PS -->|Incr Stock| R
 
-    style AG fill:#e1f5fe
-    style PS fill:#fff3e0
-    style OW fill:#e8f5e9
-    style R fill:#ffebee
-    style RMQ fill:#f3e5f5
-    style PG fill:#e0f2f1
+    %% 1. Authentication Flow
+    User ==>|1. Login / Signup| AG
+    AG <==>|2. Verify Credentials| DB
+    AG ==>|3. Return JWT Token| User
+
+    %% 2. Purchase Flow
+    User ==>|4. POST /purchase + Token| AG
+    AG ==>|5. Validate & Forward| PS
+    PS <==>|6. Atomic Stock Decr| R
+    
+    %% 3. Async Processing
+    PS ==>|7. Publish Event| MQ
+    MQ ==>|8. Consume Message| W
+    W ==>|9. Insert Order & Sync| DB
+    
+    %% 4. Cancellation Flow (Dotted)
+    User -.->|10. DELETE /order| AG
+    AG -.->|11. Soft Delete| DB
+    AG -.->|12. Request Restore| PS
+    PS -.->|13. Increment Stock| R
+
+    %% Styling
+    linkStyle 0,1,2,3,4,5,6,7,8 stroke:#2ecc71,stroke-width:2px;
+    linkStyle 9,10,11,12 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
 ````
 
 ## 🛠️ Core Technologies
