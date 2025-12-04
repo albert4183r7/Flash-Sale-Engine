@@ -158,19 +158,19 @@ Open 3 separate terminals:
 **Terminal 1 (API Gateway):**
 
 ```powershell
-cd flashsale\api-gateway; $env:PORT="5000"; go run main.go
+cd flashsale\api-gateway; go run main.go
 ```
 
 **Terminal 2 (Purchase Service):**
 
 ```powershell
-cd flashsale\purchase-service; $env:PORT="8081"; $env:REDIS_ADDR="localhost:6379"; $env:RABBITMQ_URL="amqp://guest:guest@localhost:5672/"; go run main.go
+cd flashsale\purchase-service; go run main.go
 ```
 
 **Terminal 3 (Order Worker):**
 
 ```powershell
-cd flashsale\order-worker; $env:RABBITMQ_URL="amqp://guest:guest@localhost:5672/"; $env:POSTGRES_URL="postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable"; go run main.go
+cd flashsale/order-worker; go run main.go
 ```
 
 
@@ -183,9 +183,15 @@ Use `curl` commands to test the system.
 Create a new user account.
 
 ```bash
-curl -X POST http://localhost:8080/auth/signup \
-  -H "Content-Type: application/json" \
+curl.exe -X POST http://localhost:8080/auth/signup `
+  -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
+```
+
+**Example Output:**
+
+```bash
+{"message":"User registered successfully"}
 ```
 
 -----
@@ -195,28 +201,21 @@ curl -X POST http://localhost:8080/auth/signup \
 Authenticate and receive a JWT token.
 
 ```bash
-# Linux/Mac (Save token to variable)
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "tester@example.com", "password": "password123"}' | jq -r .data.token)
+$response = curl.exe -s -X POST http://localhost:8080/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"email": "tester@example.com", "password": "password123"}'
 
-echo "Token: $TOKEN"
+# Convert the JSON string to a PowerShell object
+$json = $response | ConvertFrom-Json
+
+$TOKEN = $json.data.token
+echo "Your Token:" $TOKEN
 ```
 
 **Example Output:**
 
-```json
-{
-  "success": true,
-  "message": "Login successful",
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIsIn...",
-    "expires_in": 86400,
-    "user_id": 4,
-    "email": "tester@example.com",
-    "role": "user"
-  }
-}
+```bash
+Your Token: 
 ```
 
 -----
@@ -226,10 +225,18 @@ echo "Token: $TOKEN"
 Buy a product (e.g., ID 1: iPhone 15 Pro).
 
 ```bash
-curl -X POST http://localhost:8080/purchase \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
+$response = curl.exe -s -X POST http://localhost:8080/purchase `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
   -d '{"product_id": 1, "qty": 1}'
+
+# Convert response to Object
+$json = $response | ConvertFrom-Json
+
+# Show the neat JSON output
+$json | ConvertTo-Json -Depth 5
+$ORDER_ID = $json.data.order_id
+Write-Host "SUCCESS: Your Order ID is $ORDER_ID" -ForegroundColor Green
 ```
 
 **Example Output:**
@@ -247,8 +254,7 @@ curl -X POST http://localhost:8080/purchase \
 ### 4\. 🔍 Check Order Status
 
 ```bash
-# Replace <ORDER_ID> with the ID from above
-curl -X GET http://localhost:8080/orders/<ORDER_ID> \
+curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -272,7 +278,8 @@ curl -X GET http://localhost:8080/orders/<ORDER_ID> \
 Cancels the order and restores stock.
 
 ```bash
-curl -X DELETE http://localhost:8080/orders/<ORDER_ID> \
+# 5. Cancel order
+curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -291,9 +298,9 @@ curl -X DELETE http://localhost:8080/orders/<ORDER_ID> \
 Try buying the same product again immediately.
 
 ```bash
-curl -X POST http://localhost:8080/purchase \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
+curl.exe -X POST http://localhost:8080/purchase `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
   -d '{"product_id": 1, "qty": 1}'
 ```
 
@@ -314,9 +321,9 @@ curl -X POST http://localhost:8080/purchase \
 Try buying more than available stock (e.g., 500 units).
 
 ```bash
-curl -X POST http://localhost:8080/purchase \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
+curl.exe -X POST http://localhost:8080/purchase `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
   -d '{"product_id": 2, "qty": 500}'
 ```
 
@@ -337,8 +344,8 @@ curl -X POST http://localhost:8080/purchase \
 Try accessing without a token.
 
 ```bash
-curl -X POST http://localhost:8080/purchase \
-  -H "Content-Type: application/json" \
+curl.exe -X POST http://localhost:8080/purchase `
+  -H "Content-Type: application/json" `
   -d '{"product_id": 1, "qty": 1}'
 ```
 
@@ -359,7 +366,12 @@ curl -X POST http://localhost:8080/purchase \
 Spam the API with requests (Simulate loop).
 
 ```bash
-for i in {1..105}; do curl -s -o /dev/null -X POST http://localhost:8080/purchase ...; done
+for($i=1; $i -le 105; $i++) {
+  curl.exe -s -o $null -X POST http://localhost:8080/purchase `
+    -H "Authorization: Bearer $TOKEN" `
+    -H "Content-Type: application/json" `
+    -d "{"product_id": 1, "qty": 1}"
+}
 ```
 
 **Example Output:**
@@ -379,8 +391,8 @@ for i in {1..105}; do curl -s -o /dev/null -X POST http://localhost:8080/purchas
 Login with wrong password.
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
+curl.exe -X POST http://localhost:8080/auth/login `
+  -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "wrong"}'
 ```
 
