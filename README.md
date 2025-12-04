@@ -247,7 +247,7 @@ Buy a product (e.g., ID 1: iPhone 15 Pro).
 $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": 1, "qty": 1}'
+  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
 
 # Capture Order ID
 $json = $response | ConvertFrom-Json
@@ -255,19 +255,19 @@ $ORDER_ID = $json.data.order_id
 echo "Order Created: $ORDER_ID"
 
 # Display Full Response
-$json | ConvertTo-Json -Depth 5  
+$json | ConvertTo-Json -Depth 5
 ```
 
 **Example Output:**
 
 ```bash
-Order Created: <9096de05-4396-4861-9208-0a92e9a145e2>
+Order Created: your-order-id
 {
   "data": {
-    "order_id": "9096de05-4396-4861-9208-0a92e9a145e2",
+    "order_id": "your-order-id",
     "status": "PENDING",
     "message": "Your order is being processed",
-    "product_id": 1,
+    "product_id": "5a634200-4793-4e51-b1af-92af946541d4",
     "qty": 1
   },
   "message": "Purchase accepted and queued for processing",
@@ -288,7 +288,7 @@ curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
 
 ```json
 {
-  "order_id":"9096de05-4396-4861-9208-0a92e9a145e2",
+  "order_id":"7752725e-edde-434c-b6d4-af66055b89eb",
   "status":"SUCCESS"
 }
 ```
@@ -320,10 +320,10 @@ curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
 Try buying the same product again immediately.
 
 ```bash
-curl.exe -X POST http://localhost:8080/purchase `
+curl.exe -X POST "http://localhost:8080/purchase" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": 1, "qty": 1}'
+  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
 ```
 
 **Example Output:**
@@ -340,13 +340,13 @@ curl.exe -X POST http://localhost:8080/purchase `
 
 ### Test Case B: 📉 Out of Stock
 
-Try buying more than available stock (e.g., 500 units).
+Try buying more than available stock (e.g., 9 units).
 
 ```bash
 curl.exe -X POST http://localhost:8080/purchase `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": 2, "qty": 500}'
+  -d '{"product_id": "5d35f356-5e3c-4c41-85d5-a0f7273d82c0", "qty": 9}'
 ```
 
 **Example Output:**
@@ -355,7 +355,7 @@ curl.exe -X POST http://localhost:8080/purchase `
 {
   "success": false,
   "message": "Out of stock",
-  "error": "Product 2 is out of stock"
+  "error": "Product 5d35f356-5e3c-4c41-85d5-a0f7273d82c0 is out of stock"
 }
 ```
 
@@ -368,7 +368,7 @@ Try accessing without a token.
 ```bash
 curl.exe -X POST http://localhost:8080/purchase `
   -H "Content-Type: application/json" `
-  -d '{"product_id": 1, "qty": 1}'
+  -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
 ```
 
 **Example Output:**
@@ -392,7 +392,7 @@ for($i=1; $i -le 105; $i++) {
   curl.exe -s -o $null -X POST http://localhost:8080/purchase `
     -H "Authorization: Bearer $TOKEN" `
     -H "Content-Type: application/json" `
-    -d '{"product_id": 1, "qty": 1}'
+    -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
 }
 ```
 
@@ -429,28 +429,35 @@ curl.exe -X POST http://localhost:8080/auth/login `
 ## 💾 Database Schema
 
 ```sql
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
+-- Enable pgcrypto just in case, though gen_random_uuid is built-in for PG 13+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(50) DEFAULT 'user'
+    role VARCHAR(50) DEFAULT 'user',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE products (
-    id SERIAL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS products (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     price INT NOT NULL,
     stock INT NOT NULL CHECK (stock >= 0)
 );
 
-CREATE TABLE orders (
-    id UUID PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES users(id),
-    product_id INT NOT NULL REFERENCES products(id),
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY,  -- This 'id' IS the order_id
+    user_id UUID NOT NULL REFERENCES users(id),
+    product_id UUID NOT NULL REFERENCES products(id),
     qty INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING',
-    created_at TIMESTAMP DEFAULT NOW()
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 ```
 
 ## 📄 License
