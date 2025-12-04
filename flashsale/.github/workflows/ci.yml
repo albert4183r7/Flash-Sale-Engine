@@ -33,7 +33,7 @@ jobs:
           --health-retries 5
 
       postgres:
-        image: postgres:15-alpine
+        image: postgres:17-alpine  # <--- UPDATED to 17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -61,7 +61,7 @@ jobs:
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
-          REDIS_ADDR: localhost:6379 # <--- ADDED THIS LINE
+          REDIS_ADDR: localhost:6379  # <--- ADDED ENV VARIABLE
 
       - name: Test Purchase Service
         working-directory: ./purchase-service

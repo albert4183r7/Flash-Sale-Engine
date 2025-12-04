@@ -8,7 +8,6 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    # Use password only if set, otherwise default to no password configuration
     command: >
       sh -c '
       if [ -n "${REDIS_PASSWORD}" ]; then
@@ -48,13 +47,12 @@ services:
       - .env
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17-alpine   # <--- UPDATED to 17
     container_name: flashsale-postgres
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      # Fallback to 'postgres' if variable is empty (crucial for Docker startup)
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-flashsale}
     volumes:
@@ -76,14 +74,13 @@ services:
       dockerfile: deployments/Dockerfile.api-gateway
     container_name: flashsale-api-gateway
     ports:
-      # Maps Host Port (from .env) -> Container Port (8080)
       - "${API_GATEWAY_PORT:-8080}:8080"
     depends_on:
       purchase-service:
         condition: service_started
       postgres:
         condition: service_healthy
-      redis: # <--- ADDED DEPENDENCY
+      redis:                  # <--- ADDED REDIS DEPENDENCY
         condition: service_healthy
     networks:
       - flashsale-network
@@ -91,11 +88,10 @@ services:
     env_file:
       - .env
     environment:
-      # Internal container config
       PORT: 8080
       POSTGRES_HOST: postgres
       PURCHASE_SERVICE_URL: http://purchase-service:8081
-      REDIS_ADDR: redis:6379 # <--- ADDED ENV VARIABLE
+      REDIS_ADDR: redis:6379  # <--- ADDED ENV VARIABLE
 
   purchase-service:
     build:
@@ -103,7 +99,6 @@ services:
       dockerfile: deployments/Dockerfile.purchase-service
     container_name: flashsale-purchase-service
     ports:
-      # Maps Host Port (from .env) -> Container Port (8081)
       - "${PURCHASE_SERVICE_PORT:-8081}:8081"
     depends_on:
       redis:
@@ -118,7 +113,6 @@ services:
     env_file:
       - .env
     environment:
-      # Internal container config
       PORT: 8081
       POSTGRES_HOST: postgres
       REDIS_ADDR: redis:6379
