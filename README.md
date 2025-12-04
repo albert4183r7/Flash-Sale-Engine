@@ -83,8 +83,12 @@ graph TD
     AG -.->|13. Soft Delete & Restore| DB
 
     %% Styling
-    linkStyle 0,1,2,3,4,5,6,7,8,9,10,11 stroke:#2ecc71,stroke-width:2px;
-    linkStyle 12,13,14,15 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
+    %% Valid Link Indices: 0 to 14 (Total 15 links)
+    %% Green: Login & Purchase Steps (Indices 0-10)
+    linkStyle 0,1,2,3,4,5,6,7,8,9,10 stroke:#2ecc71,stroke-width:2px;
+    
+    %% Red/Dotted: Cancellation Steps (Indices 11-14)
+    linkStyle 11,12,13,14 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
 ````
 
 ## 🛠️ Core Technologies
