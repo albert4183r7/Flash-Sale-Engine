@@ -241,7 +241,7 @@ $json | ConvertTo-Json -Depth 5
 
 ### 3\. 🛍️ Purchase Item
 
-Buy a product (e.g., ID 1: iPhone 15 Pro).
+Buy a product (e.g., iPhone 15 Pro).
 
 ```bash
 $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
@@ -315,7 +315,7 @@ curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
 
 ## ⚠️ Failure Test Cases
 
-### Test Case A: 🔁 Duplicate Purchase (Idempotency)
+### Test Case A: 🔁 Duplicate Purchase (Idempotency) - TTL 2 minutes
 
 Try buying the same product again immediately.
 
@@ -383,17 +383,22 @@ curl.exe -X POST http://localhost:8080/purchase `
 
 -----
 
-### Test Case D: ⏳ Rate Limiting
+### Test Case D: ⏳ Rate Limiting (120 Limit)
 
 Spam the API with requests (Simulate loop).
 
 ```bash
-for($i=1; $i -le 105; $i++) {
-  curl.exe -s -o $null -X POST http://localhost:8080/purchase `
+# Run 150 requests to break the 120 limit
+1..150 | ForEach-Object {
+  $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
     -H "Authorization: Bearer $TOKEN" `
     -H "Content-Type: application/json" `
-    -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
-}
+    -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+
+  # Print only if it contains "Rate limit" to reduce noise
+  if ($response -match "Rate limit") {
+      echo $response
+  }
 ```
 
 **Example Output:**
@@ -429,7 +434,6 @@ curl.exe -X POST http://localhost:8080/auth/login `
 ## 💾 Database Schema
 
 ```sql
--- Enable pgcrypto just in case, though gen_random_uuid is built-in for PG 13+
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS users (
