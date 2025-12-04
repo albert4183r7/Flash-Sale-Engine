@@ -2,7 +2,9 @@ name: Flash Sale CI/CD
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, dev ]
+    paths:
+      - 'flashsale/**'
   pull_request:
     branches: [ main ]
 
@@ -33,7 +35,7 @@ jobs:
           --health-retries 5
 
       postgres:
-        image: postgres:17-alpine  # <--- UPDATED to 17
+        image: postgres:17-alpine 
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -56,15 +58,15 @@ jobs:
           go-version: '1.23'
 
       - name: Test API Gateway
-        working-directory: ./api-gateway
+        working-directory: ./flashsale/api-gateway
         run: go test -v ./... || echo "No tests found"
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
-          REDIS_ADDR: localhost:6379  # <--- ADDED ENV VARIABLE
+          REDIS_ADDR: localhost:6379
 
       - name: Test Purchase Service
-        working-directory: ./purchase-service
+        working-directory: ./flashsale/purchase-service
         run: go test -v ./... || echo "No tests found"
         env:
           REDIS_ADDR: localhost:6379
@@ -72,7 +74,7 @@ jobs:
           POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
 
       - name: Test Order Worker
-        working-directory: ./order-worker
+        working-directory: ./flashsale/order-worker
         run: go test -v ./... || echo "No tests found"
         env:
           RABBITMQ_URL: amqp://guest:guest@localhost:5672/
