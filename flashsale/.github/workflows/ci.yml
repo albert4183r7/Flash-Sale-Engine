@@ -61,6 +61,7 @@ jobs:
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
+          REDIS_ADDR: localhost:6379 # <--- ADDED THIS LINE
 
       - name: Test Purchase Service
         working-directory: ./purchase-service
