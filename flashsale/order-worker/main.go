@@ -20,8 +20,6 @@ func main() {
 
 	log.Println("Starting Order Worker...")
 	cfg := config.Load()
-	log.Printf("🛠️  DEBUG: Loaded RabbitMQ URL: %s", cfg.RabbitMQURL)
-    log.Printf("🛠️  DEBUG: Loaded Postgres URL: %s", cfg.PostgresURL)
 
 	pgClient, err := postgres.NewClient(cfg.PostgresURL)
 	if err != nil {
