@@ -17,8 +17,8 @@ const (
 
 type Order struct {
 	ID        uuid.UUID
-	UserID    int
-	ProductID int
+	UserID    uuid.UUID
+	ProductID uuid.UUID
 	Qty       int
 	Status    OrderStatus
 	CreatedAt time.Time
@@ -44,7 +44,7 @@ func (r *OrderRepository) UpdateStatus(orderID uuid.UUID, status OrderStatus) er
 }
 
 // DecreaseProductStock syncs the Redis decrement to the Postgres DB
-func (r *OrderRepository) DecreaseProductStock(productID, qty int) error {
+func (r *OrderRepository) DecreaseProductStock(productID uuid.UUID, qty int) error {
 	_, err := r.db.Exec(`UPDATE products SET stock = stock - $1 WHERE id = $2`, qty, productID)
 	return err
 }

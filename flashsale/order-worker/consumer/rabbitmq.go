@@ -20,8 +20,8 @@ const (
 
 type OrderEvent struct {
 	OrderID   uuid.UUID `json:"order_id"`
-	UserID    int       `json:"user_id"`
-	ProductID int       `json:"product_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
 	Qty       int       `json:"qty"`
 	Timestamp time.Time `json:"timestamp"`
 }

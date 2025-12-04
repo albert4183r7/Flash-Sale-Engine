@@ -6,13 +6,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // JWTClaims represents the claims in the JWT token
 type JWTClaims struct {
-	UserID int    `json:"user_id"`
-	Email  string `json:"email"`
-	Role   string `json:"role"`
+	UserID uuid.UUID    `json:"user_id"`
+	Email  string 		`json:"email"`
+	Role   string 		`json:"role"`
 	jwt.RegisteredClaims
 }
 

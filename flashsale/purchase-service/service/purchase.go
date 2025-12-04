@@ -35,7 +35,7 @@ func NewPurchaseService(redisClient *redis.Client, rabbitPublisher *publisher.Ra
 }
 
 // ProcessPurchase handles the purchase logic
-func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID, qty int) PurchaseResult {
+func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID uuid.UUID, qty int) PurchaseResult {
 	isFirstRequest, err := s.redisClient.SetIdempotencyKey(ctx, userID, productID, s.idempotencyTTL)
 	if err != nil {
 		return PurchaseResult{
@@ -49,7 +49,7 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 		return PurchaseResult{
 			Success: false,
 			Message: "Duplicate purchase request",
-			Error:   fmt.Sprintf("You already have a pending purchase for product %d", productID),
+			Error:   fmt.Sprintf("You already have a pending purchase for product %s", productID.String()),
 		}
 	}
 
@@ -66,7 +66,7 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 		return PurchaseResult{
 			Success: false,
 			Message: "Product not found",
-			Error:   fmt.Sprintf("Product %d does not exist or has no stock initialized", productID),
+			Error:   fmt.Sprintf("Product %s does not exist or has no stock initialized", productID.String()),
 		}
 	}
 
@@ -74,7 +74,7 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 		return PurchaseResult{
 			Success: false,
 			Message: "Out of stock",
-			Error:   fmt.Sprintf("Product %d is out of stock", productID),
+			Error:   fmt.Sprintf("Product %s is out of stock", productID.String()),
 		}
 	}
 
@@ -104,17 +104,22 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 
 // InitializeProducts sets up initial stock for products
 func (s *PurchaseService) InitializeProducts(ctx context.Context) error {
-	products := map[int]int{
-		1: 100,
-		2: 50,
-		3: 200,
-		4: 75,
-		5: 150,
+	products := map[string]int{
+		"11111111-1111-1111-1111-111111111111": 100, // iPhone 15 Pro
+		"22222222-2222-2222-2222-222222222222": 50,  // MacBook Air M3
+		"33333333-3333-3333-3333-333333333333": 200, // AirPods Pro
+		"44444444-4444-4444-4444-444444444444": 75,  // iPad Pro
+		"55555555-5555-5555-5555-555555555555": 150, // Apple Watch
 	}
 
-	for productID, stock := range products {
-		if err := s.redisClient.InitializeStock(ctx, productID, stock); err != nil {
-			return fmt.Errorf("failed to initialize stock for product %d: %w", productID, err)
+	for idStr, stock := range products {
+		uid, err := uuid.Parse(idStr)
+		if err != nil {
+			return fmt.Errorf("failed to parse product UUID %s: %w", idStr, err)
+		}
+
+		if err := s.redisClient.InitializeStock(ctx, uid, stock); err != nil {
+			return fmt.Errorf("failed to initialize stock for product %s: %w", idStr, err)
 		}
 	}
 

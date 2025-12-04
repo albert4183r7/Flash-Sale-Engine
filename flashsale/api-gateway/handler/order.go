@@ -38,8 +38,9 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 		return
 	}
 
-	// 1. Get Order Details (need product_id and qty)
-	var productID, qty int
+	// 1. Get Order Details
+	var productID uuid.UUID
+	var qty int
 	var status string
 	// Use QueryRowContext for better timeout control
 	err = h.db.QueryRowContext(c, "SELECT product_id, qty, status FROM orders WHERE id = $1", orderID).Scan(&productID, &qty, &status)
