@@ -15,6 +15,7 @@ import (
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/flashsale/purchase-service/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -60,10 +61,11 @@ func main() {
 		defer rows.Close()
 		ctx := context.Background()
 		for rows.Next() {
-			var id, stock int
+			var id uuid.UUID
+			var stock int
 			if err := rows.Scan(&id, &stock); err == nil {
 				redisClient.InitializeStock(ctx, id, stock)
-				log.Printf("Warmed up Product %d with Stock %d", id, stock)
+				log.Printf("Warmed up Product %s with Stock %d", id, stock)
 			}
 		}
 	}

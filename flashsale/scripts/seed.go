@@ -12,16 +12,14 @@ import (
 )
 
 func main() {
-	// 1. Silently attempt to load .env from parent or current directory
+	// 1. Silently attempt to load .env
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load()
 
-	// 2. Get Database URL with a Hardcoded Fallback
+	// 2. Get Database URL
 	dbURL := os.Getenv("POSTGRES_URL")
 	if dbURL == "" {
-		// Default to the standard Docker Compose setup
 		dbURL = "postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable"
-		fmt.Printf("POSTGRES_URL not set. Using default: %s\n", dbURL)
 	}
 
 	// 3. Connect to Database
@@ -32,41 +30,42 @@ func main() {
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
-		log.Fatalf("Failed to ping DB. Check if Docker/Postgres is running. Error: %v", err)
+		log.Fatalf("Failed to ping DB: %v", err)
 	}
 
 	fmt.Println("Connected to Database. Starting seed...")
 
-	// 4. Seed Products
+	// 4. Seed Products (Random UUIDs)
 	products := []struct {
-		ID    int
 		Name  string
 		Price int
 		Stock int
 	}{
-		{1, "iPhone 15 Pro", 999, 100},
-		{2, "MacBook Air M3", 1299, 50},
-		{3, "AirPods Pro", 249, 200},
-		{4, "iPad Pro", 799, 75},
-		{5, "Apple Watch", 399, 150},
+		{"iPhone 15 Pro", 999, 100},
+		{"MacBook Air M3", 1299, 8},
+		{"AirPods Pro", 249, 200},
+		{"iPad Pro", 799, 75},
+		{"Apple Watch", 399, 150},
 	}
 
 	for _, p := range products {
-		query := `
-			INSERT INTO products (id, name, price, stock) 
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (id) DO UPDATE 
-			SET stock = $4, price = $3`
+		// We use Name as the conflict target to avoid duplicates if you run seed twice
+		// Note: This assumes you add a UNIQUE constraint on 'name' or just accept duplicates for dev
+		// For a clean seed, usually we truncate tables first. 
 		
-		_, err := db.Exec(query, p.ID, p.Name, p.Price, p.Stock)
+		query := `
+			INSERT INTO products (name, price, stock) 
+			VALUES ($1, $2, $3)`
+		
+		_, err := db.Exec(query, p.Name, p.Price, p.Stock)
 		if err != nil {
 			log.Printf("Error seeding product %s: %v", p.Name, err)
 		} else {
-			fmt.Printf("   - Seeded Product: %s\n", p.Name)
+			fmt.Printf("   - Seeded Product: %s (Random UUID)\n", p.Name)
 		}
 	}
 
-	// 5. Seed Users
+	// 5. Seed Users (Random UUIDs)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
 	users := []struct {
 		Email string
@@ -74,8 +73,7 @@ func main() {
 	}{
 		{"user@example.com", "user"},
 		{"admin@example.com", "admin"},
-		{"buyer@example.com", "user"},
-		{"tester@example.com", "user"},
+		{"tester@example.com", "tester"},
 	}
 
 	for _, u := range users {

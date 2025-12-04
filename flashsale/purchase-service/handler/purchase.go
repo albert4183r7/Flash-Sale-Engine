@@ -5,13 +5,14 @@ import (
 
 	"github.com/flashsale/purchase-service/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // PurchaseRequest represents an incoming purchase request
 type PurchaseRequest struct {
-	UserID    int `json:"user_id" binding:"required,gt=0"`
-	ProductID int `json:"product_id" binding:"required,gt=0"`
-	Qty       int `json:"qty" binding:"required,gt=0,lte=10"`
+	UserID    uuid.UUID `json:"user_id" binding:"required,gt=0"`
+	ProductID uuid.UUID `json:"product_id" binding:"required,gt=0"`
+	Qty       int 		`json:"qty" binding:"required,gt=0,lte=10"`
 }
 
 // PurchaseHandler handles purchase requests

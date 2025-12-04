@@ -11,6 +11,7 @@ import (
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -59,10 +60,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	// Define a struct that matches what we want to cache
 	type CachedUser struct {
-		ID       int    `json:"id"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		ID       uuid.UUID  `json:"id"`
+		Email    string 	`json:"email"`
+		Password string 	`json:"password"`
+		Role     string 	`json:"role"`
 	}
 	var user CachedUser
 

@@ -3,10 +3,10 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strconv"
 
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type StockHandler struct {
@@ -19,7 +19,13 @@ func NewStockHandler(redisClient *redis.Client) *StockHandler {
 
 func (h *StockHandler) GetStock(c *gin.Context) {
 	productIDStr := c.Param("id")
-	productID, _ := strconv.Atoi(productIDStr)
+	
+	productID, err := uuid.Parse(productIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Product UUID"})
+		return
+	}
+
 	stock, _ := h.redisClient.GetStock(context.Background(), productID)
 	c.JSON(http.StatusOK, gin.H{"product_id": productID, "stock": stock})
 }
@@ -27,8 +33,8 @@ func (h *StockHandler) GetStock(c *gin.Context) {
 // RestoreStock handles atomic increment for cancellations
 func (h *StockHandler) RestoreStock(c *gin.Context) {
 	var req struct {
-		ProductID int `json:"product_id"`
-		Qty       int `json:"qty"`
+		ProductID uuid.UUID `json:"product_id"`
+		Qty       int 		`json:"qty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
