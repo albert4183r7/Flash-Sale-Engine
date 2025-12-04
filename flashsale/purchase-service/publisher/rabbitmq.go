@@ -19,8 +19,8 @@ const (
 // OrderEvent represents the message published to RabbitMQ
 type OrderEvent struct {
 	OrderID   uuid.UUID `json:"order_id"`
-	UserID    int       `json:"user_id"`
-	ProductID int       `json:"product_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
 	Qty       int       `json:"qty"`
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -153,7 +153,7 @@ func (r *RabbitMQ) PublishOrderCreated(event OrderEvent) error {
 		return fmt.Errorf("timeout waiting for publish confirmation")
 	}
 
-	log.Printf("Published order.created event (confirmed): OrderID=%s, UserID=%d, ProductID=%d",
+	log.Printf("Published order.created event (confirmed): OrderID=%s, UserID=%s, ProductID=%s",
 		event.OrderID, event.UserID, event.ProductID)
 
 	return nil

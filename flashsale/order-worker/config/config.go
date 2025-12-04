@@ -11,8 +11,8 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
-		RabbitMQURL: getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
-		PostgresURL: getEnv("POSTGRES_URL", "postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable"),
+		RabbitMQURL: getEnv("RABBITMQ_URL", ""),
+		PostgresURL: getEnv("POSTGRES_URL", ""),
 	}
 }
 

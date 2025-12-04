@@ -10,23 +10,25 @@ import (
 	"github.com/flashsale/order-worker/consumer"
 	"github.com/flashsale/order-worker/postgres"
 	"github.com/flashsale/order-worker/repository"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	log.Println("Starting Order Worker...")
+	if err := godotenv.Load("../.env"); err != nil {
+		log.Println("No .env file found")
+	}
 
+	log.Println("Starting Order Worker...")
 	cfg := config.Load()
-	log.Printf("Configuration loaded")
 
 	pgClient, err := postgres.NewClient(cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 	defer pgClient.Close()
-
-	if err := pgClient.InitializeSchema(); err != nil {
-		log.Fatalf("Failed to initialize schema: %v", err)
-	}
+    
+    // Schema is now handled by init.sql or migration scripts
+	// if err := pgClient.InitializeSchema(); err != nil { ... }
 
 	orderRepo := repository.NewOrderRepository(pgClient.DB())
 
@@ -42,11 +44,7 @@ func main() {
 		}
 	}()
 
-	log.Println("Order Worker is running. Press Ctrl+C to stop.")
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-
-	log.Println("Shutting down Order Worker...")
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/flashsale/api-gateway/client"
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // PurchaseHandler handles purchase requests
@@ -40,7 +41,7 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.purchaseClient.Purchase(userID.(int), req.ProductID, req.Qty)
+	resp, err := h.purchaseClient.Purchase(userID.(uuid.UUID), req.ProductID, req.Qty)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"success": false,

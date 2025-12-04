@@ -14,10 +14,10 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
-		Port:          getEnv("PORT", "8081"),
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
+		Port:          getEnv("PURCHASE_SERVICE_PORT", ""),
+		RedisAddr:     getEnv("REDIS_ADDR", ""),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		RabbitMQURL:   getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		RabbitMQURL:   getEnv("RABBITMQ_URL", ""),
 		IdempotencyTTL: 120,
 	}
 }

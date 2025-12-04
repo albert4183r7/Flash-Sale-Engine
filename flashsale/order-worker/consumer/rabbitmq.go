@@ -11,22 +11,21 @@ import (
 	"github.com/streadway/amqp"
 )
 
+// ... existing structs ...
 const (
 	exchangeName = "flashsale"
 	queueName    = "orders.queue"
 	routingKey   = "order.created"
 )
 
-// OrderEvent represents the message received from RabbitMQ
 type OrderEvent struct {
 	OrderID   uuid.UUID `json:"order_id"`
-	UserID    int       `json:"user_id"`
-	ProductID int       `json:"product_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
 	Qty       int       `json:"qty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// RabbitMQConsumer consumes messages from RabbitMQ
 type RabbitMQConsumer struct {
 	conn        *amqp.Connection
 	channel     *amqp.Channel
@@ -146,17 +145,13 @@ func (c *RabbitMQConsumer) Start() error {
 	return nil
 }
 
-// processMessage handles a single message
 func (c *RabbitMQConsumer) processMessage(msg amqp.Delivery) {
 	var event OrderEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		log.Printf("Failed to unmarshal message: %v", err)
+		log.Printf("Failed to unmarshal: %v", err)
 		msg.Nack(false, false)
 		return
 	}
-
-	log.Printf("Processing order: OrderID=%s, UserID=%d, ProductID=%d, Qty=%d",
-		event.OrderID, event.UserID, event.ProductID, event.Qty)
 
 	order := &repository.Order{
 		ID:        event.OrderID,
@@ -167,23 +162,24 @@ func (c *RabbitMQConsumer) processMessage(msg amqp.Delivery) {
 		CreatedAt: event.Timestamp,
 	}
 
+	// Create Order
 	if err := c.orderRepo.Create(order); err != nil {
-		log.Printf("Failed to create order: %v", err)
-
-		if err := c.orderRepo.UpdateStatus(event.OrderID, repository.OrderStatusFailed); err != nil {
-			log.Printf("Failed to update order status to FAILED: %v", err)
-		}
-
+		log.Printf("DB Error Create: %v", err)
 		msg.Nack(false, true)
 		return
 	}
 
+	// SYNC: Update Product Stock in DB (Eventual Consistency)
+	if err := c.orderRepo.DecreaseProductStock(event.ProductID, event.Qty); err != nil {
+		log.Printf("DB Error Stock Sync: %v", err)
+		// We still acknowledge the order creation, as stock is primarily managed in Redis.
+		// In a real system, you might flag this for reconciliation.
+	}
+
+	// Update Status to Success
 	if err := c.orderRepo.UpdateStatus(event.OrderID, repository.OrderStatusSuccess); err != nil {
-		log.Printf("Failed to update order status to SUCCESS: %v", err)
-		msg.Nack(false, true)
-		return
+		log.Printf("Failed to update status: %v", err)
 	}
 
-	log.Printf("Order processed successfully: OrderID=%s, Status=SUCCESS", event.OrderID)
 	msg.Ack(false)
 }

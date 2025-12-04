@@ -1,475 +1,469 @@
-# Flash Sale System
+# ⚡ Flash Sale System
 
-A professional-grade flash sale backend engine built with Go microservices architecture. This project demonstrates distributed systems concepts including:
-- Microservices communication
-- JWT authentication
-- Redis-based stock management and idempotency
-- Async message processing with RabbitMQ
-- PostgreSQL persistence
+A flash sale backend engine built with **Go** microservices architecture. This project demonstrates distributed systems concepts including Microservices, JWT Authentication, Redis-based stock management, and Eventual Consistency.
 
-## Architecture
-The system consists of 3 microservices:
-1. **API Gateway** (port 5000/8080) - Entry point with JWT auth, rate limiting, routing
-2. **Purchase Service** (port 8081) - Stock validation, idempotency, event publishing
-3. **Order Worker** - Async order processing from RabbitMQ to PostgreSQL
+## 📂 Project Structure
 
-## Project Structure
 ```
 flashsale/
-├── api-gateway/          # Gin-based HTTP gateway
-├── purchase-service/     # Purchase logic with Redis
-├── order-worker/         # RabbitMQ consumer + PostgreSQL
-├── common/               # Shared utilities
-├── deployments/          # Docker configurations
-├── docker-compose.yml    # Full stack orchestration
-└── README.md             # Complete documentation
+├── 🚪 api-gateway/          \# Gin-based HTTP gateway (Auth, Routing)
+├── ⚡ purchase-service/     \# High-speed Logic (Redis, RabbitMQ Publisher)
+├── 👷 order-worker/         \# Async Worker (Postgres, RabbitMQ Consumer)
+├── 🔧 common/               \# Shared utilities
+├── 📜 migrations/           \# SQL Schemas
+├── 🌱 scripts/              \# Utility scripts (Seeding)
+├── 🐳 deployments/          \# Docker configurations
+├── 🐙 docker-compose.yml    \# Full stack orchestration
+└── 📖 README.md             \# Documentation
 ```
 
-## System Architecture
+## 🏗️ System Architecture
+
+### 🚀 How It Works
+
+Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at once, the line stops moving. This system solves that problem by splitting the work into three distinct roles:
+
+1.  **🕵️ The Bouncer (API Gateway):** Checks your ID at the door. If you aren't on the list (logged in), you don't get in.
+2.  **🏎️ The Fast Cashier (Purchase Service):** Instead of writing a full contract, this cashier just checks a simple tally board (**Redis**).
+    * *Stock available?* They hand you a "Reserved" ticket instantly.
+    * *Stock empty?* They say "Sold Out" immediately.
+3.  **🗄️ The Back Office (Order Worker):** A separate team takes the "Reserved" tickets from a pile (**RabbitMQ**) and quietly files the official paperwork (**PostgreSQL**) in the background, so you don't have to wait for the filing cabinet to open.
+
+---
+
+### ⚙️ Technical Workflow
+
+The system optimizes for high concurrency by offloading reads and writes to memory:
+
+1. **🔐 Authentication (API Gateway): Cache-Aside Pattern**: When a user logs in, the system first checks Redis. If the profile exists, it returns instantly.
+   - **Database Fallback**: If not in cache, it queries PostgreSQL, caches the result for 1 hour, and then proceeds. This prevents the database from crashing during login spikes.
+
+2. **🧠 In-Memory Locking (Purchase Service)**: The core engine. It talks to **Redis (RAM-based storage)** using atomic Lua scripts. This ensures that even if 1,000 requests hit at the exact same millisecond, the stock count is accurate and no double-booking occurs.
+
+3. **📨 Async Processing (RabbitMQ)**: Once stock is reserved in Redis, the system returns ``202 Accepted`` to the user immediately. It then publishes an event to a Message Queue.
+
+4. **💾 Eventual Consistency (Order Worker)**: A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL (Disk-based storage)**, ensuring data persistence without blocking the user's response time.
+  
 
 ```mermaid
-graph TB
-    subgraph "Client Layer"
-        C[Client/Browser]
+graph TD
+    %% Nodes
+    User((👤 User))
+    AG[🚪 API Gateway]
+    PS[⚡ Purchase Service]
+    W[👷 Order Worker]
+    
+    subgraph Data_Layer [💾 Data Persistence & Queue]
+        DB[(💾 PostgreSQL)]
+        R[(🧠 Redis Cache)]
+        MQ[📨 RabbitMQ]
     end
-    
-    subgraph "API Layer"
-        AG[API Gateway<br/>Port 8080]
-    end
-    
-    subgraph "Service Layer"
-        PS[Purchase Service<br/>Port 8081]
-    end
-    
-    subgraph "Worker Layer"
-        OW[Order Worker]
-    end
-    
-    subgraph "Data Layer"
-        R[(Redis<br/>Stock + Idempotency)]
-        RMQ[(RabbitMQ<br/>Message Queue)]
-        PG[(PostgreSQL<br/>Order Storage)]
-    end
-    
-    C -->|HTTP Request| AG
-    AG -->|JWT Validation| AG
-    AG -->|Forward Request| PS
-    PS -->|SETNX Idempotency| R
-    PS -->|DECR Stock| R
-    PS -->|Publish Event| RMQ
-    RMQ -->|Consume| OW
-    OW -->|Store Order| PG
-    
-    style AG fill:#e1f5fe
-    style PS fill:#fff3e0
-    style OW fill:#e8f5e9
-    style R fill:#ffebee
-    style RMQ fill:#f3e5f5
-    style PG fill:#e0f2f1
-```
 
-## Flash Sale Flow
+    %% 1. Authentication Flow (Cache-Aside)
+    User ==>|1. Login / Signup| AG
+    AG -.->|2a. Check Cache| R
+    R -.->|2b. Miss| AG
+    AG <==>|2c. Verify & Cache| DB
+    AG ==>|3. Return JWT Token| User
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant AG as API Gateway
-    participant PS as Purchase Service
-    participant R as Redis
-    participant RMQ as RabbitMQ
-    participant OW as Order Worker
-    participant PG as PostgreSQL
+    %% 2. Purchase Flow
+    User ==>|4. POST /purchase + Token| AG
+    AG ==>|5. Validate & Forward| PS
+    PS <==>|6. Atomic Stock Decr| R
     
-    C->>AG: POST /purchase (JWT + Product + Qty)
-    AG->>AG: Validate JWT Token
-    AG->>PS: Forward Purchase Request
+    %% 3. Async Processing
+    PS ==>|7. Publish Event| MQ
+    MQ ==>|8. Consume Message| W
+    W ==>|9. Insert Order & Sync| DB
     
-    PS->>R: SETNX purchase:user:product (TTL 120s)
-    alt Key Already Exists
-        R-->>PS: false (duplicate)
-        PS-->>AG: 400 Duplicate Request
-        AG-->>C: Error: Duplicate Purchase
-    else Key Set Successfully
-        R-->>PS: true (first request)
-        PS->>R: DECR product_stock:product
-        alt Stock < 0
-            R-->>PS: -1 (out of stock)
-            PS-->>AG: 400 Out of Stock
-            AG-->>C: Error: Out of Stock
-        else Stock >= 0
-            R-->>PS: new_stock
-            PS->>RMQ: Publish order.created
-            PS-->>AG: 202 Accepted
-            AG-->>C: Order Accepted (OrderID)
-            
-            RMQ->>OW: Consume Message
-            OW->>PG: INSERT order (PENDING)
-            OW->>PG: UPDATE status = SUCCESS
-        end
-    end
-```
+    %% 4. Cancellation Flow (Atomic Restoration)
+    User -.->|10. DELETE /order| AG
+    AG -.->|11. Request Restore| PS
+    PS -.->|12. Increment Stock| R
+    AG -.->|13. Soft Delete & Restore| DB
 
-## Core Technologies
+    %% Styling
+    %% Valid Link Indices: 0 to 14 (Total 15 links)
+    %% Green: Login & Purchase Steps (Indices 0-10)
+    linkStyle 0,1,2,3,4,5,6,7,8,9,10 stroke:#2ecc71,stroke-width:2px;
+    
+    %% Red/Dotted: Cancellation Steps (Indices 11-14)
+    linkStyle 11,12,13,14 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
+````
+
+## 🛠️ Core Technologies
 
 | Technology | Purpose |
-|------------|---------|
-| Go 1.23 | Fast, concurrent, simple syntax |
-| Gin | Lightweight HTTP framework |
-| Redis | In-memory stock & idempotency |
-| RabbitMQ | Async message processing |
-| PostgreSQL | Persistent order storage |
-| Docker Compose | Local orchestration |
+| :--- | :--- |
+| **Go 1.23** | Fast, concurrent, simple syntax |
+| **Gin** | Lightweight HTTP framework |
+| **Redis** | In-memory stock & idempotency |
+| **RabbitMQ** | Async message processing |
+| **PostgreSQL** | Persistent order storage |
+| **Docker Compose** | Local orchestration |
 
-## Quick Start
 
-### Option 1: With Docker Compose (Full Functionality)
+## 🏁 Quick Start
+
+### Option 1: 🐳 With Docker Compose (Recommended)
+
+This automates the entire setup, including database creation and schema initialization.
 
 ```bash
+# 1. Setup Environment Variables
+# Create the .env file from the example template
+cp .env.example .env
+
+# 2. Start all services
 cd flashsale && docker-compose up --build
-# API Gateway: http://localhost:8080
-# RabbitMQ Management: http://localhost:15672 (guest/guest)
+
+# 3. Seed the database (In a new terminal)
+# This populates initial products and users
+cd scripts && go run seed.go
 ```
 
-### Option 2: Without Docker (Windows)
+-----
 
-#### Prerequisites
+### Option 2: 🛠️ Without Docker (Manual Setup)
 
-**Windows:**
-- Go: https://go.dev/dl/
-- Redis: https://github.com/tporadowski/redis/releases
-- RabbitMQ: https://www.rabbitmq.com/download.html
-- PostgreSQL: https://www.postgresql.org/download/windows/
+#### Prerequisites (Windows)
 
-#### Setup
+  - [Go 1.23+](https://go.dev/dl/)
+  - [Redis](https://github.com/tporadowski/redis/releases)
+  - [RabbitMQ](https://www.rabbitmq.com/download.html)
+  - [PostgreSQL](https://www.postgresql.org/download/windows/)
 
-**Windows (PowerShell):**
+#### Database Setup
+
+You must manually create the database and run the schema file.
+
+**PowerShell:**
+
 ```powershell
-# Start services (from Services panel or):
+# 1. Start Services
 net start redis
 net start rabbitmq
 net start postgresql-x64-15
 
-# Create database
+# 2. Create Database
 psql -U postgres -c "CREATE DATABASE flashsale;"
+
+# 3. Initialize Schema (Tables)
+psql -U postgres -d flashsale -f migrations/init.sql
+
+# 4. Setup Config
+# Manually create .env or set environment variables in your terminal session
+
+# 5. Seed Data
+cd flashsale\scripts
+go run seed.go
 ```
 
-#### Run Services
+#### Run Microservices
 
-Open 3 terminals:
+Open 3 separate terminals:
 
-**Terminal 1 - API Gateway (PowerShell):**
-```powershell
-cd flashsale\api-gateway; $env:PORT="5000"; go run main.go
-```
-
-**Terminal 2 - Purchase Service (PowerShell):**
-```powershell
-cd flashsale\purchase-service; $env:PORT="8081"; $env:REDIS_ADDR="localhost:6379"; $env:RABBITMQ_URL="amqp://guest:guest@localhost:5672/"; go run main.go
-```
-
-**Terminal 3 - Order Worker (PowerShell):**
-```powershell
-cd flashsale\order-worker; $env:RABBITMQ_URL="amqp://guest:guest@localhost:5672/"; $env:POSTGRES_URL="postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable"; go run main.go
-```
-
-#### Test API
-
-**Windows (PowerShell):**
-
-Set `$PORT` based on environment:
-- **Local (Without Docker)**: `$PORT = 5000`
-- **Docker (With Docker Compose)**: `$PORT = 8080`
+**Terminal 1 (API Gateway):**
 
 ```powershell
-$PORT = 5000  # Change to 8080 for Docker
-
-# 1. Authentication - Login
-$loginBody = @{ email = "user@example.com"; password = "password123" } | ConvertTo-Json
-$loginResponse = Invoke-RestMethod -Uri "http://localhost:$PORT/auth/login" -Method Post -Body $loginBody -ContentType "application/json"
-$TOKEN = $loginResponse.data.token
-Write-Host "Token: $TOKEN"
-
-# 2. Purchasing - Make a purchase
-$purchaseBody = @{ product_id = 1; qty = 1 } | ConvertTo-Json
-$purchaseResponse = Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-  -Body $purchaseBody -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer $TOKEN" }
-$ORDER_ID = $purchaseResponse.data.order_id
-Write-Host "Order ID: $ORDER_ID"
-
-# 3. Check Order Status
-$orderStatus = Invoke-RestMethod -Uri "http://localhost:$PORT/orders/$ORDER_ID" `
-  -Headers @{ Authorization = "Bearer $TOKEN" }
-$orderStatus | ConvertTo-Json
+cd flashsale\api-gateway; go run main.go
 ```
 
-**Terminal Output:**
+**Terminal 2 (Purchase Service):**
+
+```powershell
+cd flashsale\purchase-service; go run main.go
+```
+
+**Terminal 3 (Order Worker):**
+
+```powershell
+cd flashsale/order-worker; go run main.go
+```
+
+
+## 🧪 API Endpoints & Testing Guide
+
+Use `curl` commands to test the system.
+
+### 1\. 📝 Sign Up
+
+Create a new user account.
+
+```bash
+curl.exe -X POST http://localhost:8080/auth/signup `
+  -H "Content-Type: application/json" `
+  -d '{"email": "tester@example.com", "password": "password123"}'
+```
+
+**Example Output:**
+
 ```json
-# Step 1: Login Response
-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzM5NDY1NTAsInVzZXJfaWQiOjEsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsInJvbGUiOiJ1c2VyIn0.rN2x5jK8pQrS3tUvWxY2zAb4cDeFgHiJkLmNoPqRsTu
-
-# Step 2: Purchase Response & Order ID
-Order ID: 550e8400-e29b-41d4-a716-446655440000
-
-# Step 3: Order Status Response
 {
-  "success": true,
-  "message": "Order status retrieved",
+  "message": "User registered successfully"
+}
+```
+
+-----
+
+### 2\. 🔑 Login
+
+Authenticate and receive a JWT token.
+
+```bash
+$response = curl.exe -s -X POST "http://localhost:8080/auth/login" `
+  -H "Content-Type: application/json" `
+  -d '{"email": "tester@example.com", "password": "password123"}'
+
+# Parse JSON to get Token
+$json = $response | ConvertFrom-Json
+$TOKEN = $json.data.token
+
+# Display Full Response
+$json | ConvertTo-Json -Depth 5
+```
+
+**Example Output:**
+
+```json
+{
   "data": {
-    "order_id": "550e8400-e29b-41d4-a716-446655440000",
-    "user_id": 1,
-    "product_id": 1,
-    "qty": 1,
-    "status": "SUCCESS",
-    "created_at": "2025-12-01T10:30:45Z"
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.***HIDDEN***",
+    "expires_in": 86400,
+    "user_id": 4,
+    "email": "tester@example.com",
+    "role": "user"
   }
 }
 ```
 
-## Test Failure Cases
+-----
 
-### Test Case 1: Duplicate Purchase (Idempotency Check)
+### 3\. 🛍️ Purchase Item
 
-**Windows (PowerShell):**
-```powershell
-# Try same purchase again
-$purchaseBody = @{ product_id = 1; qty = 1 } | ConvertTo-Json
-$dupResponse = Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-  -Body $purchaseBody -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer $TOKEN" }
-$dupResponse | ConvertTo-Json
+Buy a product (e.g., iPhone 15 Pro).
+
+```bash
+$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
+  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+
+# Capture Order ID
+$json = $response | ConvertFrom-Json
+$ORDER_ID = $json.data.order_id
+echo "Order Created: $ORDER_ID"
+
+# Display Full Response
+$json | ConvertTo-Json -Depth 5
 ```
 
-**Windows PowerShell Terminal Output:**
-```json
+**Example Output:**
+
+```bash
+Order Created: your-order-id
 {
-  "success": false,
-  "message": "Duplicate purchase request detected",
-  "data": null
+  "data": {
+    "order_id": "your-order-id",
+    "status": "PENDING",
+    "message": "Your order is being processed",
+    "product_id": "5a634200-4793-4e51-b1af-92af946541d4",
+    "qty": 1
+  },
+  "message": "Purchase accepted and queued for processing",
+  "success": true
 }
 ```
 
----
+-----
 
-### Test Case 2: Out of Stock
+### 4\. 🔍 Check Order Status
 
-**Windows (PowerShell):**
-```powershell
-$purchaseBody = @{ product_id = 2; qty = 300 } | ConvertTo-Json
-$stockResponse = Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-  -Body $purchaseBody -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer $TOKEN" }
-$stockResponse | ConvertTo-Json
+```bash
+curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-**Windows PowerShell Terminal Output:**
+**Example Output:**
+
+```json
+{
+  "order_id":"7752725e-edde-434c-b6d4-af66055b89eb",
+  "status":"SUCCESS"
+}
+```
+
+-----
+
+### 5\. 🚫 Cancel Order
+
+Cancels the order and restores stock.
+
+```bash
+# 5. Cancel order
+curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Example Output:**
+
+```json
+{
+  "message": "Order cancelled and stock restored"
+}
+```
+
+## ⚠️ Failure Test Cases
+
+### Test Case A: 🔁 Duplicate Purchase (Idempotency) - TTL 2 minutes
+
+Try buying the same product again immediately.
+
+```bash
+curl.exe -X POST "http://localhost:8080/purchase" `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
+  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+```
+
+**Example Output:**
+
+```json
+{
+  "success": false,
+  "message": "Duplicate purchase request",
+  "error": "You already have a pending purchase for product 1"
+}
+```
+
+-----
+
+### Test Case B: 📉 Out of Stock
+
+Try buying more than available stock (e.g., 9 units).
+
+```bash
+curl.exe -X POST http://localhost:8080/purchase `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
+  -d '{"product_id": "5d35f356-5e3c-4c41-85d5-a0f7273d82c0", "qty": 9}'
+```
+
+**Example Output:**
+
 ```json
 {
   "success": false,
   "message": "Out of stock",
-  "data": {
-    "available_stock": 50
+  "error": "Product 5d35f356-5e3c-4c41-85d5-a0f7273d82c0 is out of stock"
+}
+```
+
+-----
+
+### Test Case C: ⛔ Unauthorized
+
+Try accessing without a token.
+
+```bash
+curl.exe -X POST http://localhost:8080/purchase `
+  -H "Content-Type: application/json" `
+  -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
+```
+
+**Example Output:**
+
+```json
+{
+  "success": false,
+  "message": "Authorization required",
+  "error": "Missing Authorization header"
+}
+```
+
+-----
+
+### Test Case D: ⏳ Rate Limiting (120 Limit)
+
+Spam the API with requests (Simulate loop).
+
+```bash
+# Run 150 requests to break the 120 limit
+1..150 | ForEach-Object {
+  $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+    -H "Authorization: Bearer $TOKEN" `
+    -H "Content-Type: application/json" `
+    -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+
+  # Print only if it contains "Rate limit" to reduce noise
+  if ($response -match "Rate limit") {
+      echo $response
   }
-}
 ```
 
----
+**Example Output:**
 
-### Test Case 3: Unauthorized (Invalid JWT)
-
-**Windows (PowerShell):**
-```powershell
-$purchaseBody = @{ product_id = 1; qty = 1 } | ConvertTo-Json
-$authResponse = Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-  -Body $purchaseBody -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer invalid-token-here" }
-$authResponse | ConvertTo-Json
-```
-
-**Windows PowerShell Terminal Output:**
 ```json
 {
   "success": false,
-  "message": "Unauthorized: Invalid or expired token",
-  "data": null
+  "message": "Rate limit exceeded",
+  "error": "Too many requests. Please try again later."
 }
 ```
 
----
+-----
 
-### Test Case 4: Rate Limiting (429 Too Many Requests)
+### Test Case E: ❌ Invalid Credentials
 
-**Windows (PowerShell):**
-```powershell
-# Simulate rate limiting with multiple requests
-$count = 0
-while ($count -lt 101) {
-  $productId = Get-Random -Minimum 1 -Maximum 6
-  $purchaseBody = @{ product_id = $productId; qty = 1 } | ConvertTo-Json
-  try {
-    $response = Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-      -Body $purchaseBody -ContentType "application/json" `
-      -Headers @{ Authorization = "Bearer $TOKEN" } -ErrorAction SilentlyContinue
-  } catch {}
-  $count++
-}
+Login with wrong password.
 
-# Next request should be rate-limited
-$purchaseBody = @{ product_id = 1; qty = 1 } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://localhost:$PORT/purchase" -Method Post `
-  -Body $purchaseBody -ContentType "application/json" `
-  -Headers @{ Authorization = "Bearer $TOKEN" }
+```bash
+curl.exe -X POST http://localhost:8080/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"email": "tester@example.com", "password": "wrong"}'
 ```
 
-**Windows PowerShell Terminal Output:**
+**Example Output:**
+
 ```json
 {
-  "success": false,
-  "message": "Rate limit exceeded: 100 requests per 60 seconds",
-  "data": {
-    "retry_after": 15
-  }
+  "error": "Invalid credentials"
 }
 ```
 
----
-
-### Test Case 5: Invalid Credentials (Login Failure)
-
-**Windows (PowerShell):**
-```powershell
-$loginBody = @{ email = "user@example.com"; password = "wrongpassword" } | ConvertTo-Json
-$loginError = Invoke-RestMethod -Uri "http://localhost:$PORT/auth/login" -Method Post `
-  -Body $loginBody -ContentType "application/json"
-$loginError | ConvertTo-Json
-```
-
-**Windows PowerShell Terminal Output:**
-```json
-{
-  "success": false,
-  "message": "Invalid email or password",
-  "data": null
-}
-```
-
-## Test Credentials
-
-| Email | Password | Role |
-|-------|----------|------|
-| user@example.com | password123 | user |
-| admin@example.com | admin123 | admin |
-| buyer@example.com | buyer123 | user |
-
-## Test Products
-
-| Product ID | Name | Initial Stock |
-|------------|------|---------------|
-| 1 | iPhone 15 Pro | 100 |
-| 2 | MacBook Air M3 | 50 |
-| 3 | AirPods Pro | 200 |
-| 4 | iPad Pro | 75 |
-| 5 | Apple Watch | 150 |
-
-## Key Features
-
-1. **Idempotency**: Redis SETNX with 120s TTL prevents duplicate purchases
-2. **Atomic Stock Management**: Lua scripts ensure no overselling under high load
-3. **Async Processing**: 202 Accepted response with background RabbitMQ processing
-4. **Rate Limiting**: 100 requests/60s per IP
-5. **JWT Authentication**: Token-based security with 24-hour expiration
-
-
-## Environment Variables
-
-| Service | Variable | Default |
-|---------|----------|---------|
-| API Gateway | PORT | 8080 |
-| Purchase | PORT | 8081 |
-| Purchase | REDIS_ADDR | localhost:6379 |
-| Purchase | RABBITMQ_URL | amqp://guest:guest@localhost:5672/ |
-| Worker | RABBITMQ_URL | amqp://guest:guest@localhost:5672/ |
-| Worker | POSTGRES_URL | postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable |
-
-## API Endpoints
-
-### Login
-```bash
-POST /auth/login
-Body: {"email": "user@example.com", "password": "password123"}
-```
-
-### Purchase
-```bash
-POST /purchase (Requires JWT)
-Body: {"product_id": 1, "qty": 1}
-Response: 202 Accepted
-```
-
-### Order Status
-```bash
-GET /orders/<order-id> (Requires JWT)
-```
-
-### Health
-```bash
-GET /health
-```
-
-## Key Concepts
-
-- **Idempotency Key Format**: `purchase:{user_id}:{product_id}`
-- **Stock Key Format**: `product_stock:{product_id}`
-- **Order Status**: PENDING → SUCCESS/FAILED
-- **Rate Limiter**: In-memory, per-IP tracking
-
-## Performance Highlights
-
-- Sub-millisecond Redis stock checks
-- No race conditions via atomic Lua scripts
-- Immediate API response (202 Accepted)
-- Connection pooling for databases
-- Graceful shutdown handling
-
-## Error Handling
-
-| Status | Scenario |
-|--------|----------|
-| 200 | Success |
-| 202 | Purchase accepted (async) |
-| 400 | Bad request / Out of stock / Duplicate |
-| 401 | Unauthorized |
-| 429 | Rate limit exceeded |
-| 500 | Internal error |
-| 503 | Service unavailable |
-
-## Database Schema
+## 💾 Database Schema
 
 ```sql
-CREATE TABLE orders (
-    id UUID PRIMARY KEY,
-    user_id INT NOT NULL,
-    product_id INT NOT NULL,
-    qty INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING',
-    created_at TIMESTAMP DEFAULT NOW()
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'user',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_orders_user_id ON orders(user_id);
-CREATE INDEX idx_orders_status ON orders(status);
+
+CREATE TABLE IF NOT EXISTS products (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    price INT NOT NULL,
+    stock INT NOT NULL CHECK (stock >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY,  -- This 'id' IS the order_id
+    user_id UUID NOT NULL REFERENCES users(id),
+    product_id UUID NOT NULL REFERENCES products(id),
+    qty INT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 ```
 
-## Use Cases
+## 📄 License
 
-- E-commerce flash sales
-- Concert/event ticket releases
-- Limited-time meal deals
-- Hotel room flash sales
-- In-game item releases
-- Software license sales
-
-## License
-
-MIT - Use for portfolio or production projects!
-
----
-
+MIT - Use for portfolio or personal projects!

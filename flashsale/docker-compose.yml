@@ -8,7 +8,13 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: >
+      sh -c '
+      if [ -n "${REDIS_PASSWORD}" ]; then
+        redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}";
+      else
+        redis-server --appendonly yes;
+      fi'
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -16,6 +22,8 @@ services:
       retries: 5
     networks:
       - flashsale-network
+    env_file:
+      - .env
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -35,18 +43,21 @@ services:
       retries: 5
     networks:
       - flashsale-network
+    env_file:
+      - .env
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17-alpine 
     container_name: flashsale-postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: flashsale
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -54,6 +65,8 @@ services:
       retries: 5
     networks:
       - flashsale-network
+    env_file:
+      - .env
 
   api-gateway:
     build:
@@ -61,17 +74,24 @@ services:
       dockerfile: deployments/Dockerfile.api-gateway
     container_name: flashsale-api-gateway
     ports:
-      - "8080:8080"
-    environment:
-      PORT: "8080"
-      JWT_SECRET: "your-super-secret-key-change-in-production"
-      PURCHASE_SERVICE_URL: "http://purchase-service:8081"
+      - "${API_GATEWAY_PORT:-8080}:8080"
     depends_on:
       purchase-service:
         condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:                 
+        condition: service_healthy
     networks:
       - flashsale-network
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+      POSTGRES_HOST: postgres
+      PURCHASE_SERVICE_URL: http://purchase-service:8081
+      REDIS_ADDR: redis:6379 
 
   purchase-service:
     build:
@@ -79,29 +99,29 @@ services:
       dockerfile: deployments/Dockerfile.purchase-service
     container_name: flashsale-purchase-service
     ports:
-      - "8081:8081"
-    environment:
-      PORT: "8081"
-      REDIS_ADDR: "redis:6379"
-      REDIS_PASSWORD: ""
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      - "${PURCHASE_SERVICE_PORT:-8081}:8081"
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - flashsale-network
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8081
+      POSTGRES_HOST: postgres
+      REDIS_ADDR: redis:6379
 
   order-worker:
     build:
       context: .
       dockerfile: deployments/Dockerfile.order-worker
     container_name: flashsale-order-worker
-    environment:
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
-      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/flashsale?sslmode=disable"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -110,6 +130,10 @@ services:
     networks:
       - flashsale-network
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
 
 networks:
   flashsale-network:

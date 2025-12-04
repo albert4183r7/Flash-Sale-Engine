@@ -1,76 +1,108 @@
 package handler
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// User represents a user for authentication
-type User struct {
-	ID       int
-	Email    string
-	Password string
-	Role     string
-}
-
-// DummyUsers for authentication (in production, use a database)
-var DummyUsers = map[string]User{
-	"user@example.com": {
-		ID:       1,
-		Email:    "user@example.com",
-		Password: "password123",
-		Role:     "user",
-	},
-	"admin@example.com": {
-		ID:       2,
-		Email:    "admin@example.com",
-		Password: "admin123",
-		Role:     "admin",
-	},
-	"buyer@example.com": {
-		ID:       3,
-		Email:    "buyer@example.com",
-		Password: "buyer123",
-		Role:     "user",
-	},
-}
-
-// AuthHandler handles authentication requests
 type AuthHandler struct {
-	jwtSecret string
+	db          *sql.DB
+	redisClient *redis.Client
+	jwtSecret   string
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(jwtSecret string) *AuthHandler {
-	return &AuthHandler{jwtSecret: jwtSecret}
+// Update Constructor
+func NewAuthHandler(db *sql.DB, redisClient *redis.Client, jwtSecret string) *AuthHandler {
+	return &AuthHandler{db: db, redisClient: redisClient, jwtSecret: jwtSecret}
 }
 
-// Login handles user login and returns JWT token
+// Signup remains the same...
+func (h *AuthHandler) Signup(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	_, err = h.db.Exec("INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'user')", req.Email, string(hashedPassword))
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "User likely already exists"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully"})
+}
+
+// Login with Caching
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	user, exists := DummyUsers[req.Email]
-	if !exists || user.Password != req.Password {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "Authentication failed",
-			"error":   "Invalid email or password",
-		})
+	// Define a struct that matches what we want to cache
+	type CachedUser struct {
+		ID       uuid.UUID  `json:"id"`
+		Email    string 	`json:"email"`
+		Password string 	`json:"password"`
+		Role     string 	`json:"role"`
+	}
+	var user CachedUser
+
+	// 1. CACHE CHECK (Redis)
+	cacheKey := fmt.Sprintf("user:%s", req.Email)
+	val, err := h.redisClient.Get(context.Background(), cacheKey).Result()
+	
+	cacheHit := false
+	if err == nil {
+		// Cache Hit!
+		if jsonErr := json.Unmarshal([]byte(val), &user); jsonErr == nil {
+			cacheHit = true
+		}
+	}
+
+	// 2. CACHE MISS (Database Query)
+	if !cacheHit {
+		err := h.db.QueryRow("SELECT id, email, password_hash, role FROM users WHERE email = $1", req.Email).Scan(&user.ID, &user.Email, &user.Password, &user.Role)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			return
+		}
+
+		// 3. WRITE BACK TO CACHE (TTL: 1 Hour)
+		if jsonBytes, err := json.Marshal(user); err == nil {
+			h.redisClient.Set(context.Background(), cacheKey, jsonBytes, time.Hour)
+		}
+	}
+
+	// 4. VERIFY PASSWORD (CPU Intensive)
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
+	// 5. GENERATE TOKEN
 	expiresIn := time.Hour * 24
 	expirationTime := time.Now().Add(expiresIn)
 
@@ -79,23 +111,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"email":   user.Email,
 		"role":    user.Role,
 		"exp":     expirationTime.Unix(),
-		"iat":     time.Now().Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(h.jwtSecret))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to generate token",
-			"error":   "Internal server error",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Login successful",
 		"data": dto.LoginResponse{
 			Token:     tokenString,
 			ExpiresIn: int64(expiresIn.Seconds()),
