@@ -29,7 +29,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"order_id": orderID, "status": status})
 }
 
-// CancelOrder handles Soft Delete + Stock Restore
+// CancelOrder handles Soft Delete + Stock Restore (Redis & Postgres)
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	orderIDStr := c.Param("id")
 	orderID, err := uuid.Parse(orderIDStr)
@@ -41,7 +41,8 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	// 1. Get Order Details (need product_id and qty)
 	var productID, qty int
 	var status string
-	err = h.db.QueryRow("SELECT product_id, qty, status FROM orders WHERE id = $1", orderID).Scan(&productID, &qty, &status)
+	// Use QueryRowContext for better timeout control
+	err = h.db.QueryRowContext(c, "SELECT product_id, qty, status FROM orders WHERE id = $1", orderID).Scan(&productID, &qty, &status)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
 		return
@@ -52,21 +53,51 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 		return
 	}
 
-	// 2. Call Purchase Service to Restore Stock in Redis
-	// Note: In a robust system, this should be an idempotent event or transaction
+	// 2. Restore Stock in Redis (Cache Layer)
+	// We do this *before* the DB transaction. If Redis fails, we stop here.
+	// In a distributed system, this might lead to race conditions, but for flash sales,
+	// keeping Redis accurate is priority #1 for availability.
 	err = h.purchaseClient.RestoreStock(productID, qty)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Failed to restore stock"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Failed to restore stock in cache"})
 		return
 	}
 
-	// 3. Soft Delete in DB
-	_, err = h.db.Exec("UPDATE orders SET status = 'CANCELLED' WHERE id = $1", orderID)
+	// 3. Database Transaction (Persistence Layer)
+	// We wrap the Status Update and Stock Restoration in a transaction for atomicity.
+	tx, err := h.db.BeginTx(c, nil)
 	if err != nil {
-		// Critical: Stock was restored but DB failed. In prod, we need retry logic here.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start database transaction"})
+		return
+	}
+	// Defer a rollback in case of panic or error, though we commit explicitly at the end.
+	defer tx.Rollback()
+
+	// 3a. Update Order Status
+	res, err := tx.ExecContext(c, "UPDATE orders SET status = 'CANCELLED' WHERE id = $1", orderID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
 		return
 	}
+	
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Order was updated by another process"})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Order cancelled and stock restored"})
+	// 3b. Restore Stock in PostgreSQL (The missing piece)
+	_, err = tx.ExecContext(c, "UPDATE products SET stock = stock + $1 WHERE id = $2", qty, productID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restore stock in database"})
+		return
+	}
+
+	// 4. Commit Transaction
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Order cancelled and stock restored successfully"})
 }
