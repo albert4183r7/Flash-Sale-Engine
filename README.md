@@ -1,6 +1,6 @@
 # ⚡ Flash Sale System
 
-A professional-grade flash sale backend engine built with **Go** microservices architecture. This project demonstrates distributed systems concepts including Microservices, JWT Authentication, Redis-based stock management, and Eventual Consistency.
+A flash sale backend engine built with **Go** microservices architecture. This project demonstrates distributed systems concepts including Microservices, JWT Authentication, Redis-based stock management, and Eventual Consistency.
 
 ## 📂 Project Structure
 
@@ -33,15 +33,17 @@ Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at on
 
 ### ⚙️ Technical Workflow
 
-The system optimizes for high concurrency by offloading writes to memory:
+The system optimizes for high concurrency by offloading reads and writes to memory:
 
-**1. 🔐 Authentication (API Gateway):** The entry point. It validates **JWT Tokens** to ensure the user is legit and applies **Rate Limiting** to prevent spambots.
+1. **🔐 Authentication (API Gateway): Cache-Aside Pattern**: When a user logs in, the system first checks Redis. If the profile exists, it returns instantly.
+   - **Database Fallback**: If not in cache, it queries PostgreSQL, caches the result for 1 hour, and then proceeds. This prevents the database from crashing during login spikes.
 
-**2. 🧠 In-Memory Locking (Purchase Service):** The core engine. It talks to **Redis** (RAM-based storage) using atomic Lua scripts. This ensures that even if 1,000 requests hit at the exact same millisecond, the stock count is accurate and no double-booking occurs.
+2. **🧠 In-Memory Locking (Purchase Service)**: The core engine. It talks to **Redis (RAM-based storage)** using atomic Lua scripts. This ensures that even if 1,000 requests hit at the exact same millisecond, the stock count is accurate and no double-booking occurs.
 
-**3. 📨 Async Processing (RabbitMQ):** Once stock is reserved in Redis, the system returns `202 Accepted` to the user immediately. It then publishes an event to a Message Queue.
+3. **📨 Async Processing (RabbitMQ)**: Once stock is reserved in Redis, the system returns ``202 Accepted`` to the user immediately. It then publishes an event to a Message Queue.
 
-**4. 💾 Eventual Consistency (Order Worker):** A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL** (Disk-based storage), ensuring data persistence without blocking the user's response time.
+4. **💾 Eventual Consistency (Order Worker)**: A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL (Disk-based storage)**, ensuring data persistence without blocking the user's response time.
+  
 
 ```mermaid
 graph TD
@@ -57,9 +59,11 @@ graph TD
         MQ[📨 RabbitMQ]
     end
 
-    %% 1. Authentication Flow
+    %% 1. Authentication Flow (Cache-Aside)
     User ==>|1. Login / Signup| AG
-    AG <==>|2. Verify Credentials| DB
+    AG -.->|2a. Check Cache| R
+    R -.->|2b. Miss| AG
+    AG <==>|2c. Verify & Cache| DB
     AG ==>|3. Return JWT Token| User
 
     %% 2. Purchase Flow
@@ -72,15 +76,15 @@ graph TD
     MQ ==>|8. Consume Message| W
     W ==>|9. Insert Order & Sync| DB
     
-    %% 4. Cancellation Flow (Dotted)
+    %% 4. Cancellation Flow (Atomic Restoration)
     User -.->|10. DELETE /order| AG
-    AG -.->|11. Soft Delete| DB
-    AG -.->|12. Request Restore| PS
-    PS -.->|13. Increment Stock| R
+    AG -.->|11. Request Restore| PS
+    PS -.->|12. Increment Stock| R
+    AG -.->|13. Soft Delete & Restore| DB
 
     %% Styling
-    linkStyle 0,1,2,3,4,5,6,7,8 stroke:#2ecc71,stroke-width:2px;
-    linkStyle 9,10,11,12 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
+    linkStyle 0,1,2,3,4,5,6,7,8,9,10,11 stroke:#2ecc71,stroke-width:2px;
+    linkStyle 12,13,14,15 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
 ````
 
 ## 🛠️ Core Technologies
