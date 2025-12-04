@@ -8,9 +8,11 @@ import (
 	"github.com/flashsale/api-gateway/handler"
 	"github.com/flashsale/api-gateway/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
-func Setup(cfg *config.Config, db *sql.DB) *gin.Engine {
+// Update Setup signature to accept Redis Client
+func Setup(cfg *config.Config, db *sql.DB, redisClient *redis.Client) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -22,8 +24,8 @@ func Setup(cfg *config.Config, db *sql.DB) *gin.Engine {
 	healthHandler := handler.NewHealthHandler()
 	r.GET("/health", healthHandler.Health)
 
-	// Inject DB into AuthHandler
-	authHandler := handler.NewAuthHandler(db, cfg.JWTSecret)
+	// Inject DB AND Redis into AuthHandler
+	authHandler := handler.NewAuthHandler(db, redisClient, cfg.JWTSecret)
 	auth := r.Group("/auth")
 	{
 		auth.POST("/signup", authHandler.Signup)
@@ -32,7 +34,7 @@ func Setup(cfg *config.Config, db *sql.DB) *gin.Engine {
 
 	purchaseClient := client.NewPurchaseClient(cfg.PurchaseServiceURL)
 	purchaseHandler := handler.NewPurchaseHandler(purchaseClient)
-	orderHandler := handler.NewOrderHandler(db, purchaseClient) // Inject DB
+	orderHandler := handler.NewOrderHandler(db, purchaseClient)
 
 	protected := r.Group("/")
 	protected.Use(middleware.JWTAuth(cfg.JWTSecret))

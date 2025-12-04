@@ -6,12 +6,14 @@ import (
 )
 
 type Config struct {
-	Port               string
-	JWTSecret          string
-	PurchaseServiceURL string
-	PostgresURL        string
-	RateLimitRequests  int
-	RateLimitWindow    int
+	Port               	string
+	JWTSecret          	string
+	PurchaseServiceURL 	string
+	PostgresURL        	string
+	RedisAddr			string
+	RedisPassword		string
+	RateLimitRequests  	int
+	RateLimitWindow    	int
 }
 
 func Load() *Config {
@@ -20,6 +22,8 @@ func Load() *Config {
 		JWTSecret:          getEnv("JWT_SECRET", ""),
 		PurchaseServiceURL: getEnv("PURCHASE_SERVICE_URL", ""),
 		PostgresURL:        getEnv("POSTGRES_URL", ""),
+		RedisAddr:          getEnv("REDIS_ADDR", ""),
+		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
 		RateLimitRequests:  120,
 		RateLimitWindow:    60,
 	}
