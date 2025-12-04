@@ -11,7 +11,7 @@ import (
 type PurchaseRequest struct {
 	UserID    int `json:"user_id" binding:"required,gt=0"`
 	ProductID int `json:"product_id" binding:"required,gt=0"`
-	Qty       int `json:"qty" binding:"required,gt=1,lte=10"`
+	Qty       int `json:"qty" binding:"required,gt=0,lte=10"`
 }
 
 // PurchaseHandler handles purchase requests
