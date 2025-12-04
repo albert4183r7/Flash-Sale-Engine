@@ -57,17 +57,16 @@ func (c *Client) DB() *sql.DB {
 func (c *Client) InitializeSchema() error {
 	schema := `
 		CREATE TABLE IF NOT EXISTS orders (
-			id UUID PRIMARY KEY,
-			user_id INT NOT NULL,
-			product_id INT NOT NULL,
-			qty INT NOT NULL,
-			status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-			created_at TIMESTAMP NOT NULL DEFAULT NOW()
-		);
+		id UUID PRIMARY KEY,
+		user_id UUID NOT NULL REFERENCES users(id),   
+		product_id UUID NOT NULL REFERENCES products(id),
+		qty INT NOT NULL,
+		status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+		created_at TIMESTAMP NOT NULL DEFAULT NOW()
+	);
 
 		CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 		CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-		CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
 	`
 
 	_, err := c.db.Exec(schema)
