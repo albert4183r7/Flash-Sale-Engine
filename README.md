@@ -260,8 +260,8 @@ $json | ConvertTo-Json -Depth 5
 
 **Example Output:**
 
-```json
-Order Created: 9096de05-4396-4861-9208-0a92e9a145e2
+```bash
+Order Created: <9096de05-4396-4861-9208-0a92e9a145e2>
 {
   "data": {
     "order_id": "9096de05-4396-4861-9208-0a92e9a145e2",
