@@ -190,8 +190,10 @@ curl.exe -X POST http://localhost:8080/auth/signup `
 
 **Example Output:**
 
-```bash
-{"message":"User registered successfully"}
+```json
+{
+  "message": "User registered successfully"
+}
 ```
 
 -----
@@ -201,51 +203,67 @@ curl.exe -X POST http://localhost:8080/auth/signup `
 Authenticate and receive a JWT token.
 
 ```bash
-$response = curl.exe -s -X POST http://localhost:8080/auth/login `
+$response = curl.exe -s -X POST "http://localhost:8080/auth/login" `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
 
-# Convert the JSON string to a PowerShell object
+# Parse JSON to get Token
 $json = $response | ConvertFrom-Json
-
 $TOKEN = $json.data.token
-echo "Your Token:" $TOKEN
-```
 
-**Example Output:**
-
-```bash
-Your Token: 
-```
-
------
-
-### 3\. 🛍️ Purchase Item (Happy Path)
-
-Buy a product (e.g., ID 1: iPhone 15 Pro).
-
-```bash
-$response = curl.exe -s -X POST http://localhost:8080/purchase `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": 1, "qty": 1}'
-
-# Convert response to Object
-$json = $response | ConvertFrom-Json
-
-# Show the neat JSON output
+# Display Full Response
 $json | ConvertTo-Json -Depth 5
-$ORDER_ID = $json.data.order_id
-Write-Host "SUCCESS: Your Order ID is $ORDER_ID" -ForegroundColor Green
 ```
 
 **Example Output:**
 
 ```json
 {
-  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.***HIDDEN***",
+    "expires_in": 86400,
+    "user_id": 4,
+    "email": "tester@example.com",
+    "role": "user"
+  }
+}
+```
+
+-----
+
+### 3\. 🛍️ Purchase Item
+
+Buy a product (e.g., ID 1: iPhone 15 Pro).
+
+```bash
+$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Content-Type: application/json" `
+  -d '{"product_id": 1, "qty": 1}'
+
+# Capture Order ID
+$json = $response | ConvertFrom-Json
+$ORDER_ID = $json.data.order_id
+echo "Order Created: $ORDER_ID"
+
+# Display Full Response
+$json | ConvertTo-Json -Depth 5  
+```
+
+**Example Output:**
+
+```json
+Order Created: 9096de05-4396-4861-9208-0a92e9a145e2
+{
+  "data": {
+    "order_id": "9096de05-4396-4861-9208-0a92e9a145e2",
+    "status": "PENDING",
+    "message": "Your order is being processed",
+    "product_id": 1,
+    "qty": 1
+  },
   "message": "Purchase accepted and queued for processing",
-  "order_id": "550e8400-e29b-41d4-a716-446655440000"
+  "success": true
 }
 ```
 
@@ -262,12 +280,8 @@ curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
 
 ```json
 {
-  "success": true,
-  "message": "Order status retrieved",
-  "data": {
-    "order_id": "...",
-    "status": "SUCCESS"
-  }
+  "order_id":"9096de05-4396-4861-9208-0a92e9a145e2",
+  "status":"SUCCESS"
 }
 ```
 
@@ -370,7 +384,7 @@ for($i=1; $i -le 105; $i++) {
   curl.exe -s -o $null -X POST http://localhost:8080/purchase `
     -H "Authorization: Bearer $TOKEN" `
     -H "Content-Type: application/json" `
-    -d "{"product_id": 1, "qty": 1}"
+    -d '{"product_id": 1, "qty": 1}'
 }
 ```
 
@@ -400,9 +414,7 @@ curl.exe -X POST http://localhost:8080/auth/login `
 
 ```json
 {
-  "success": false,
-  "message": "Authentication failed",
-  "error": "Invalid email or password"
+  "error": "Invalid credentials"
 }
 ```
 
