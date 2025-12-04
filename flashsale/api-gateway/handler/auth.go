@@ -1,27 +1,34 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthHandler struct {
-	db        *sql.DB
-	jwtSecret string
+	db          *sql.DB
+	redisClient *redis.Client
+	jwtSecret   string
 }
 
-func NewAuthHandler(db *sql.DB, jwtSecret string) *AuthHandler {
-	return &AuthHandler{db: db, jwtSecret: jwtSecret}
+// Update Constructor
+func NewAuthHandler(db *sql.DB, redisClient *redis.Client, jwtSecret string) *AuthHandler {
+	return &AuthHandler{db: db, redisClient: redisClient, jwtSecret: jwtSecret}
 }
 
+// Signup remains the same...
 func (h *AuthHandler) Signup(c *gin.Context) {
-	var req dto.LoginRequest // Reusing struct for simplicity, ideally separate
+	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -42,6 +49,7 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully"})
 }
 
+// Login with Caching
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -49,27 +57,51 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	var user struct {
-		ID       int
-		Email    string
-		Password string
-		Role     string
+	// Define a struct that matches what we want to cache
+	type CachedUser struct {
+		ID       int    `json:"id"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	var user CachedUser
+
+	// 1. CACHE CHECK (Redis)
+	cacheKey := fmt.Sprintf("user:%s", req.Email)
+	val, err := h.redisClient.Get(context.Background(), cacheKey).Result()
+	
+	cacheHit := false
+	if err == nil {
+		// Cache Hit!
+		if jsonErr := json.Unmarshal([]byte(val), &user); jsonErr == nil {
+			cacheHit = true
+		}
 	}
 
-	err := h.db.QueryRow("SELECT id, email, password_hash, role FROM users WHERE email = $1", req.Email).Scan(&user.ID, &user.Email, &user.Password, &user.Role)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-		return
+	// 2. CACHE MISS (Database Query)
+	if !cacheHit {
+		err := h.db.QueryRow("SELECT id, email, password_hash, role FROM users WHERE email = $1", req.Email).Scan(&user.ID, &user.Email, &user.Password, &user.Role)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			return
+		}
+
+		// 3. WRITE BACK TO CACHE (TTL: 1 Hour)
+		if jsonBytes, err := json.Marshal(user); err == nil {
+			h.redisClient.Set(context.Background(), cacheKey, jsonBytes, time.Hour)
+		}
 	}
 
+	// 4. VERIFY PASSWORD (CPU Intensive)
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
+	// 5. GENERATE TOKEN
 	expiresIn := time.Hour * 24
 	expirationTime := time.Now().Add(expiresIn)
 
@@ -88,7 +120,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token": tokenString,
 		"data": dto.LoginResponse{
 			Token:     tokenString,
 			ExpiresIn: int64(expiresIn.Seconds()),
