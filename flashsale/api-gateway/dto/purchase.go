@@ -3,7 +3,7 @@ package dto
 // PurchaseRequest represents a purchase request
 type PurchaseRequest struct {
 	ProductID int `json:"product_id" binding:"required,gt=0"`
-	Qty       int `json:"qty" binding:"required,gt=0,lte=10"`
+	Qty       int `json:"qty" binding:"required,gt=0,lte=1000"`
 }
 
 // PurchaseResponse represents a purchase response
