@@ -47,7 +47,7 @@ services:
       - .env
 
   postgres:
-    image: postgres:17-alpine   # <--- UPDATED to 17
+    image: postgres:17-alpine 
     container_name: flashsale-postgres
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -80,7 +80,7 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
-      redis:                  # <--- ADDED REDIS DEPENDENCY
+      redis:                 
         condition: service_healthy
     networks:
       - flashsale-network
@@ -91,7 +91,7 @@ services:
       PORT: 8080
       POSTGRES_HOST: postgres
       PURCHASE_SERVICE_URL: http://purchase-service:8081
-      REDIS_ADDR: redis:6379  # <--- ADDED ENV VARIABLE
+      REDIS_ADDR: redis:6379 
 
   purchase-service:
     build:
