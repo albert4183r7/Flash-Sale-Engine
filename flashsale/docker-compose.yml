@@ -83,6 +83,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      redis: # <--- ADDED DEPENDENCY
+        condition: service_healthy
     networks:
       - flashsale-network
     restart: unless-stopped
@@ -93,6 +95,7 @@ services:
       PORT: 8080
       POSTGRES_HOST: postgres
       PURCHASE_SERVICE_URL: http://purchase-service:8081
+      REDIS_ADDR: redis:6379 # <--- ADDED ENV VARIABLE
 
   purchase-service:
     build:
