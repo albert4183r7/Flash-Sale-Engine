@@ -1,3 +1,19 @@
+// Package publisher provides RabbitMQ publishing functionality for async order processing.
+//
+// Architecture Overview:
+// The Flash Sale system uses RabbitMQ for eventual consistency. When a user makes
+// a purchase, we immediately reserve stock in Redis and publish an OrderEvent to
+// RabbitMQ. The order-worker then consumes these events asynchronously to:
+//  1. Create the order in PostgreSQL
+//  2. Process payment via payment-service
+//  3. Update order status based on payment result
+//
+// This decouples the fast purchase path from slower database operations,
+// allowing the system to handle thousands of concurrent purchases.
+//
+// Publisher Confirms:
+// We use RabbitMQ publisher confirms to ensure messages are persisted before
+// returning success to the user. This prevents data loss if RabbitMQ crashes.
 package publisher
 
 import (
@@ -10,19 +26,25 @@ import (
 	"github.com/streadway/amqp"
 )
 
+// RabbitMQ configuration constants
 const (
+	// exchangeName is the direct exchange for flash sale events
 	exchangeName = "flashsale"
-	queueName    = "orders.queue"
-	routingKey   = "order.created"
+	// queueName is the durable queue for order processing
+	queueName = "orders.queue"
+	// routingKey is the routing key for order.created events
+	routingKey = "order.created"
 )
 
 // OrderEvent represents the message published to RabbitMQ
 type OrderEvent struct {
-	OrderID   uuid.UUID `json:"order_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	ProductID uuid.UUID `json:"product_id"`
-	Qty       int       `json:"qty"`
-	Timestamp time.Time `json:"timestamp"`
+	OrderID       uuid.UUID `json:"order_id"`
+	UserID        uuid.UUID `json:"user_id"`
+	ProductID     uuid.UUID `json:"product_id"`
+	Qty           int       `json:"qty"`
+	Notes         string    `json:"notes,omitempty"`
+	PaymentMethod string    `json:"payment_method,omitempty"`
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 // RabbitMQ wraps RabbitMQ connection and channel

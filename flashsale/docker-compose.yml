@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # ==================== INFRASTRUCTURE ====================
   redis:
     image: redis:7-alpine
     container_name: flashsale-redis
@@ -9,14 +10,13 @@ services:
     volumes:
       - redis_data:/data
     command: >
-      sh -c '
-      if [ -n "${REDIS_PASSWORD}" ]; then
+      sh -c ' if [ -n "${REDIS_PASSWORD}" ]; then
         redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}";
       else
         redis-server --appendonly yes;
       fi'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -37,7 +37,7 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -46,41 +46,99 @@ services:
     env_file:
       - .env
 
-  postgres:
-    image: postgres:17-alpine 
-    container_name: flashsale-postgres
+  # ==================== DATABASES (Separate per Service) ====================
+  user-db:
+    image: postgres:17-alpine
+    container_name: flashsale-user-db
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
+      POSTGRES_DB: flashsale_users
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - user_db_data:/var/lib/postgresql/data
+      - ./migrations/users.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
       - flashsale-network
-    env_file:
-      - .env
 
-  api-gateway:
+  product-db:
+    image: postgres:17-alpine
+    container_name: flashsale-product-db
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: flashsale_products
+    volumes:
+      - product_db_data:/var/lib/postgresql/data
+      - ./migrations/products.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  order-db:
+    image: postgres:17-alpine
+    container_name: flashsale-order-db
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: flashsale_orders
+    volumes:
+      - order_db_data:/var/lib/postgresql/data
+      - ./migrations/orders.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  payment-db:
+    image: postgres:17-alpine
+    container_name: flashsale-payment-db
+    ports:
+      - "5436:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: flashsale_payments
+    volumes:
+      - payment_db_data:/var/lib/postgresql/data
+      - ./migrations/payments.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flashsale-network
+
+  # ==================== MICROSERVICES ====================
+  user-service:
     build:
       context: .
-      dockerfile: deployments/Dockerfile.api-gateway
-    container_name: flashsale-api-gateway
+      dockerfile: deployments/Dockerfile.user-service
+    container_name: flashsale-user-service
     ports:
-      - "${API_GATEWAY_PORT:-8080}:8080"
+      - "8082:8082"
     depends_on:
-      purchase-service:
-        condition: service_started
-      postgres:
+      user-db:
         condition: service_healthy
-      redis:                 
+      redis:
         condition: service_healthy
     networks:
       - flashsale-network
@@ -88,10 +146,50 @@ services:
     env_file:
       - .env
     environment:
-      PORT: 8080
-      POSTGRES_HOST: postgres
-      PURCHASE_SERVICE_URL: http://purchase-service:8081
-      REDIS_ADDR: redis:6379 
+      USER_SERVICE_PORT: 8082
+      USER_POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@user-db:5432/flashsale_users?sslmode=disable
+      REDIS_ADDR: redis:6379
+
+  product-service:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.product-service
+    container_name: flashsale-product-service
+    ports:
+      - "8083:8083"
+    depends_on:
+      product-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PRODUCT_SERVICE_PORT: 8083
+      PRODUCT_POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@product-db:5432/flashsale_products?sslmode=disable
+      REDIS_ADDR: redis:6379
+
+  order-service:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.order-service
+    container_name: flashsale-order-service
+    ports:
+      - "8084:8084"
+    depends_on:
+      order-db:
+        condition: service_healthy
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ORDER_SERVICE_PORT: 8084
+      ORDER_POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@order-db:5432/flashsale_orders?sslmode=disable
 
   purchase-service:
     build:
@@ -99,23 +197,24 @@ services:
       dockerfile: deployments/Dockerfile.purchase-service
     container_name: flashsale-purchase-service
     ports:
-      - "${PURCHASE_SERVICE_PORT:-8081}:8081"
+      - "8081:8081"
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
+      product-service:
+        condition: service_started
     networks:
       - flashsale-network
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      PORT: 8081
-      POSTGRES_HOST: postgres
+      PURCHASE_SERVICE_PORT: 8081
       REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      PRODUCT_SERVICE_URL: http://product-service:8083
 
   order-worker:
     build:
@@ -125,15 +224,68 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
+      order-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
     networks:
       - flashsale-network
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      POSTGRES_HOST: postgres
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      ORDER_SERVICE_URL: http://order-service:8084
+      PRODUCT_SERVICE_URL: http://product-service:8083
+      PAYMENT_SERVICE_URL: http://payment-service:8086
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile.api-gateway
+    container_name: flashsale-api-gateway
+    ports:
+      - "${API_GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      user-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      purchase-service:
+        condition: service_started
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      API_GATEWAY_PORT: 8080
+      USER_SERVICE_URL: http://user-service:8082
+      PRODUCT_SERVICE_URL: http://product-service:8083
+      ORDER_SERVICE_URL: http://order-service:8084
+      PURCHASE_SERVICE_URL: http://purchase-service:8081
+      PAYMENT_SERVICE_URL: http://payment-service:8086
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: flashsale-payment-service
+    ports:
+      - "8086:8086"
+    depends_on:
+      payment-db:
+        condition: service_healthy
+    networks:
+      - flashsale-network
+    restart: unless-stopped
+    environment:
+      PORT: 8086
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payment-db:5432/flashsale_payments?sslmode=disable
 
 networks:
   flashsale-network:
@@ -142,4 +294,7 @@ networks:
 volumes:
   redis_data:
   rabbitmq_data:
-  postgres_data:
+  user_db_data:
+  product_db_data:
+  order_db_data:
+  payment_db_data:

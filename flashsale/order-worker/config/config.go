@@ -4,15 +4,19 @@ import "os"
 
 // Config holds Order Worker configuration
 type Config struct {
-	RabbitMQURL string
-	PostgresURL string
+	RabbitMQURL        string
+	OrderServiceURL    string
+	ProductServiceURL  string
+	PaymentServiceURL  string
 }
 
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
-		RabbitMQURL: getEnv("RABBITMQ_URL", ""),
-		PostgresURL: getEnv("POSTGRES_URL", ""),
+		RabbitMQURL:        getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		OrderServiceURL:    getEnv("ORDER_SERVICE_URL", "http://localhost:8084"),
+		ProductServiceURL:  getEnv("PRODUCT_SERVICE_URL", "http://localhost:8083"),
+		PaymentServiceURL:  getEnv("PAYMENT_SERVICE_URL", "http://localhost:8086"),
 	}
 }
 

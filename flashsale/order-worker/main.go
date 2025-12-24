@@ -6,10 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/flashsale/order-worker/client"
 	"github.com/flashsale/order-worker/config"
 	"github.com/flashsale/order-worker/consumer"
-	"github.com/flashsale/order-worker/postgres"
-	"github.com/flashsale/order-worker/repository"
 	"github.com/joho/godotenv"
 )
 
@@ -21,18 +20,13 @@ func main() {
 	log.Println("Starting Order Worker...")
 	cfg := config.Load()
 
-	pgClient, err := postgres.NewClient(cfg.PostgresURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
-	}
-	defer pgClient.Close()
-    
-    // Schema is now handled by init.sql or migration scripts
-	// if err := pgClient.InitializeSchema(); err != nil { ... }
+	// Initialize HTTP clients for services
+	orderClient := client.NewOrderServiceClient(cfg.OrderServiceURL)
+	productClient := client.NewProductServiceClient(cfg.ProductServiceURL)
+	paymentClient := client.NewPaymentServiceClient(cfg.PaymentServiceURL)
 
-	orderRepo := repository.NewOrderRepository(pgClient.DB())
-
-	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderRepo)
+	// Create RabbitMQ consumer with HTTP clients
+	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderClient, productClient, paymentClient)
 	if err != nil {
 		log.Fatalf("Failed to create RabbitMQ consumer: %v", err)
 	}
@@ -47,4 +41,5 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	log.Println("Shutting down Order Worker...")
 }
