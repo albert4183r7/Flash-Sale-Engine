@@ -6,28 +6,33 @@ A flash sale backend engine built with **Go** microservices architecture. This p
 
 ```
 flashsale/
-├── 🚪 api-gateway/          \# Gin-based HTTP gateway (Auth, Routing)
-├── ⚡ purchase-service/     \# High-speed Logic (Redis, RabbitMQ Publisher)
-├── 👷 order-worker/         \# Async Worker (Postgres, RabbitMQ Consumer)
-├── 🔧 common/               \# Shared utilities
-├── 📜 migrations/           \# SQL Schemas
-├── 🌱 scripts/              \# Utility scripts (Seeding)
-├── 🐳 deployments/          \# Docker configurations
-├── 🐙 docker-compose.yml    \# Full stack orchestration
-└── 📖 README.md             \# Documentation
+├── 🚪 api-gateway/          # Pure routing/proxy layer (JWT validation, rate limiting)
+├── 👤 user-service/         # Authentication & user management
+├── 📦 product-service/      # Product catalog & stock management
+├── 📋 order-service/        # Order CRUD & status management
+├── ⚡ purchase-service/     # High-speed purchase logic (Redis, RabbitMQ)
+├── � payment-service/      # Mock payment processing
+├── �👷 order-worker/         # Async order processing (RabbitMQ Consumer)
+├── 📜 migrations/           # Service-specific SQL schemas
+├── 🌱 scripts/              # Utility scripts (Seeding)
+├── 🐳 deployments/          # Docker configurations
+├── 🐙 docker-compose.yml    # Full stack (7 services, 4 databases)
+└── 📖 README.md             # Documentation
 ```
 
 ## 🏗️ System Architecture
 
 ### 🚀 How It Works
 
-Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at once, the line stops moving. This system solves that problem by splitting the work into three distinct roles:
+Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at once, the line stops moving. This system solves that problem by splitting the work into six distinct microservices:
 
-1.  **🕵️ The Bouncer (API Gateway):** Checks your ID at the door. If you aren't on the list (logged in), you don't get in.
-2.  **🏎️ The Fast Cashier (Purchase Service):** Instead of writing a full contract, this cashier just checks a simple tally board (**Redis**).
-    * *Stock available?* They hand you a "Reserved" ticket instantly.
-    * *Stock empty?* They say "Sold Out" immediately.
-3.  **🗄️ The Back Office (Order Worker):** A separate team takes the "Reserved" tickets from a pile (**RabbitMQ**) and quietly files the official paperwork (**PostgreSQL**) in the background, so you don't have to wait for the filing cabinet to open.
+1.  **🚪 API Gateway:** Routes requests and validates JWT tokens. Pure proxy with no database access.
+2.  **👤 User Service:** Handles authentication, JWT generation, and user management.
+3.  **📦 Product Service:** Manages product catalog and Redis-based stock operations.
+4.  **📋 Order Service:** Stores and manages order lifecycle.
+5.  **⚡ Purchase Service:** High-speed purchase logic using Redis atomic operations.
+6.  **� Payment Service:** Mock payment processing for development/testing.
+7.  **�👷 Order Worker:** Async background worker that processes orders and payments.
 
 ---
 
@@ -35,61 +40,36 @@ Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at on
 
 The system optimizes for high concurrency by offloading reads and writes to memory:
 
-1. **🔐 Authentication (API Gateway): Cache-Aside Pattern**: When a user logs in, the system first checks Redis. If the profile exists, it returns instantly.
-   - **Database Fallback**: If not in cache, it queries PostgreSQL, caches the result for 1 hour, and then proceeds. This prevents the database from crashing during login spikes.
+1. **🔐 Authentication (User Service)**: User service handles login/signup with JWT tokens. User data is cached in Redis for fast lookups.
 
-2. **🧠 In-Memory Locking (Purchase Service)**: The core engine. It talks to **Redis (RAM-based storage)** using atomic Lua scripts. This ensures that even if 1,000 requests hit at the exact same millisecond, the stock count is accurate and no double-booking occurs.
+2. **🧠 In-Memory Locking (Purchase Service)**: The core engine. Uses **Redis** with atomic Lua scripts to ensure accurate stock counts even under 1,000+ concurrent requests.
 
-3. **📨 Async Processing (RabbitMQ)**: Once stock is reserved in Redis, the system returns ``202 Accepted`` to the user immediately. It then publishes an event to a Message Queue.
+3. **📨 Async Processing (RabbitMQ)**: Once stock is reserved in Redis, the system returns `202 Accepted` immediately and publishes an event to RabbitMQ.
 
-4. **💾 Eventual Consistency (Order Worker)**: A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL (Disk-based storage)**, ensuring data persistence without blocking the user's response time.
-  
+4. **💾 Eventual Consistency (Order Worker)**: A background worker consumes messages and persists orders to **PostgreSQL** via the Order Service.
+
 
 ```mermaid
 graph TD
-    %% Nodes
-    User((👤 User))
-    AG[🚪 API Gateway]
-    PS[⚡ Purchase Service]
-    W[👷 Order Worker]
+    User((👤 User)) --> AG[🚪 API Gateway :8080]
     
-    subgraph Data_Layer [💾 Data Persistence & Queue]
-        DB[(💾 PostgreSQL)]
-        R[(🧠 Redis Cache)]
-        MQ[📨 RabbitMQ]
-    end
-
-    %% 1. Authentication Flow (Cache-Aside)
-    User ==>|1. Login / Signup| AG
-    AG -.->|2a. Check Cache| R
-    R -.->|2b. Miss| AG
-    AG <==>|2c. Verify & Cache| DB
-    AG ==>|3. Return JWT Token| User
-
-    %% 2. Purchase Flow
-    User ==>|4. POST /purchase + Token| AG
-    AG ==>|5. Validate & Forward| PS
-    PS <==>|6. Atomic Stock Decr| R
+    AG --> US[👤 User Service :8082]
+    AG --> ProdS[📦 Product Service :8083]
+    AG --> OS[📋 Order Service :8084]
+    AG --> PS[⚡ Purchase Service :8081]
     
-    %% 3. Async Processing
-    PS ==>|7. Publish Event| MQ
-    MQ ==>|8. Consume Message| W
-    W ==>|9. Insert Order & Sync| DB
-    
-    %% 4. Cancellation Flow (Atomic Restoration)
-    User -.->|10. DELETE /order| AG
-    AG -.->|11. Request Restore| PS
-    PS -.->|12. Increment Stock| R
-    AG -.->|13. Soft Delete & Restore| DB
-
-    %% Styling
-    %% Valid Link Indices: 0 to 14 (Total 15 links)
-    %% Green: Login & Purchase Steps (Indices 0-10)
-    linkStyle 0,1,2,3,4,5,6,7,8,9,10 stroke:#2ecc71,stroke-width:2px;
-    
-    %% Red/Dotted: Cancellation Steps (Indices 11-14)
-    linkStyle 11,12,13,14 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
-````
+    US --> UserDB[(user-db :5433)]
+    ProdS --> ProductDB[(product-db :5434)]
+    OS --> OrderDB[(order-db :5435)]
+    PayS[💳 Payment Service :8086] --> PaymentDB[(payment-db :5436)]
+    ProdS --> Redis[(Redis)]
+    PS --> Redis
+    PS --> RMQ[RabbitMQ]
+    RMQ --> OW[👷 Order Worker]
+    OW --> OS
+    OW --> ProdS
+    OW --> PayS
+```
 
 ## 🛠️ Core Technologies
 
@@ -99,369 +79,464 @@ graph TD
 | **Gin** | Lightweight HTTP framework |
 | **Redis** | In-memory stock & idempotency |
 | **RabbitMQ** | Async message processing |
-| **PostgreSQL** | Persistent order storage |
+| **PostgreSQL** | Persistent storage (3 separate databases) |
 | **Docker Compose** | Local orchestration |
 
 
 ## 🏁 Quick Start
 
-### Option 1: 🐳 With Docker Compose (Recommended)
-
-This automates the entire setup, including database creation and schema initialization.
+### 🐳 With Docker Compose
 
 ```bash
 # 1. Setup Environment Variables
-# Create the .env file from the example template
 cp .env.example .env
 
-# 2. Start all services
+# 2. Start all services (6 services + 3 databases)
 cd flashsale && docker-compose up --build
 
-# 3. Seed the database (In a new terminal)
-# This populates initial products and users
+# 3. Seed the databases (In a new terminal)
+# First, update .env for local seeding:
+# USER_POSTGRES_URL=postgres://postgres:postgres@localhost:5433/flashsale_users?sslmode=disable
+# PRODUCT_POSTGRES_URL=postgres://postgres:postgres@localhost:5434/flashsale_products?sslmode=disable
 cd scripts && go run seed.go
 ```
 
------
-
-### Option 2: 🛠️ Without Docker (Manual Setup)
-
-#### Prerequisites (Windows)
-
-  - [Go 1.23+](https://go.dev/dl/)
-  - [Redis](https://github.com/tporadowski/redis/releases)
-  - [RabbitMQ](https://www.rabbitmq.com/download.html)
-  - [PostgreSQL](https://www.postgresql.org/download/windows/)
-
-#### Database Setup
-
-You must manually create the database and run the schema file.
-
-**PowerShell:**
-
-```powershell
-# 1. Start Services
-net start redis
-net start rabbitmq
-net start postgresql-x64-15
-
-# 2. Create Database
-psql -U postgres -c "CREATE DATABASE flashsale;"
-
-# 3. Initialize Schema (Tables)
-psql -U postgres -d flashsale -f migrations/init.sql
-
-# 4. Setup Config
-# Manually create .env or set environment variables in your terminal session
-
-# 5. Seed Data
-cd flashsale\scripts
-go run seed.go
-```
-
-#### Run Microservices
-
-Open 3 separate terminals:
-
-**Terminal 1 (API Gateway):**
-
-```powershell
-cd flashsale\api-gateway; go run main.go
-```
-
-**Terminal 2 (Purchase Service):**
-
-```powershell
-cd flashsale\purchase-service; go run main.go
-```
-
-**Terminal 3 (Order Worker):**
-
-```powershell
-cd flashsale/order-worker; go run main.go
-```
-
-
 ## 🧪 API Endpoints & Testing Guide
 
-Use `curl` commands to test the system.
+All endpoints go through the **API Gateway** at `http://localhost:8080`.
+
+| Method | Endpoint | Description | Auth |
+|--------|----------|-------------|------|
+| POST | `/auth/signup` | Create new user | No |
+| POST | `/auth/login` | Get JWT token | No |
+| GET | `/products` | List all products | No |
+| GET | `/products/:id` | Get product details | No |
+| GET | `/products/:id/stock` | Get current stock | No |
+| POST | `/purchase` | Make a purchase | Yes |
+| GET | `/orders/:id` | Get order by ID | Yes |
+| GET | `/my-orders` | Get user's orders | Yes |
+| DELETE | `/orders/:id` | Cancel order | Yes |
+
+---
+
+### Testing Commands (PowerShell)
 
 ### 1\. 📝 Sign Up
 
-Create a new user account.
-
-```bash
-curl.exe -X POST http://localhost:8080/auth/signup `
+```powershell
+$response = curl.exe -s -X POST http://localhost:8080/auth/signup `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
-  "message": "User registered successfully"
+  "success": true,
+  "data": {
+    "user_id": "200a19e1-4a0e-4086-8509-0a9f5fd40453"
+  },
+  "message": "Account created successfully. You can now log in."
 }
 ```
 
------
+---
 
 ### 2\. 🔑 Login
 
-Authenticate and receive a JWT token.
-
-```bash
+```powershell
 $response = curl.exe -s -X POST "http://localhost:8080/auth/login" `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
 
-# Parse JSON to get Token
 $json = $response | ConvertFrom-Json
 $TOKEN = $json.data.token
-
-# Display Full Response
 $json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
+  "success": true,
   "data": {
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.***HIDDEN***",
+    "token": "eyJhbGciOiJIUzI1NiIs...",
     "expires_in": 86400,
-    "user_id": 4,
+    "user_id": "200a19e1-4a0e-4086-8509-0a9f5fd40453",
     "email": "tester@example.com",
-    "role": "user"
-  }
+    "role": "tester"
+  },
+  "message": "Login successful. Welcome back!"
 }
 ```
 
------
+---
 
-### 3\. 🛍️ Purchase Item
+### 3\. 📦 List Products
 
-Buy a product (e.g., iPhone 15 Pro).
+```powershell
+$response = curl.exe -s http://localhost:8080/products
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
 
-```bash
+**Response:**
+```json
+{
+  "products": [
+    {
+      "id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc",
+      "name": "iPhone 15 Pro",
+      "description": "Latest flagship smartphone with A17 Pro chip. Available in Blue Titanium, Black Titanium. Storage: 128GB, 256GB, 512GB.",
+      "price": 999,
+      "stock": 100
+    }
+  ]
+}
+```
+
+---
+
+### 4\. 📊 Get Product Stock
+
+```powershell
+$response = curl.exe -s http://localhost:8080/products/9b633b6b-4384-42ea-9675-2c3788f8e4bc/stock
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
+
+**Response:**
+```json
+{
+  "product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc",
+  "stock": 100
+}
+```
+
+---
+
+### 5\. 🛍️ Purchase Item
+
+```powershell
+# Add "notes" for variants and "payment_method" for payment simulation
+# Payment methods: mock_success (default), mock_fail, mock_pending
 $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+  -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1, "notes": "Color: Blue", "payment_method": "mock_success"}'
 
-# Capture Order ID
 $json = $response | ConvertFrom-Json
 $ORDER_ID = $json.data.order_id
 echo "Order Created: $ORDER_ID"
-
-# Display Full Response
 $json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
-```bash
-Order Created: your-order-id
+**Response:**
+```json
 {
+  "success": true,
   "data": {
-    "order_id": "your-order-id",
-    "status": "PENDING",
-    "message": "Your order is being processed",
-    "product_id": "5a634200-4793-4e51-b1af-92af946541d4",
-    "qty": 1
+    "order_id": "e4858bd8-5542-4d54-9fe1-de5ce07be721",
+    "product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc",
+    "product_name": "iPhone 15 Pro",
+    "qty": 1,
+    "status": "PENDING"
   },
-  "message": "Purchase accepted and queued for processing",
-  "success": true
+  "message": "Your order for iPhone 15 Pro has been placed and is being processed."
 }
 ```
 
------
+---
 
-### 4\. 🔍 Check Order Status
+### 6\. 🔍 Check Order Status
 
-```bash
-curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
+```powershell
+$response = curl.exe -s -X GET http://localhost:8080/orders/$ORDER_ID `
   -H "Authorization: Bearer $TOKEN"
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
-  "order_id":"7752725e-edde-434c-b6d4-af66055b89eb",
-  "status":"SUCCESS"
+  "success": true,
+  "data": {
+    "order_id": "e4858bd8-5542-4d54-9fe1-de5ce07be721",
+    "status": "SUCCESS"
+  },
+  "message": "Order retrieved successfully."
 }
 ```
 
------
+---
 
-### 5\. 🚫 Cancel Order
+### 7\. 📋 Get My Orders
 
-Cancels the order and restores stock.
-
-```bash
-# 5. Cancel order
-curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
+```powershell
+$response = curl.exe -s http://localhost:8080/my-orders `
   -H "Authorization: Bearer $TOKEN"
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
-  "message": "Order cancelled and stock restored"
+  "orders": [
+    {
+      "id": "e4858bd8-5542-4d54-9fe1-de5ce07be721",
+      "user_id": "200a19e1-4a0e-4086-8509-0a9f5fd40453",
+      "product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc",
+      "product_name": "iPhone 15 Pro",
+      "product_price": 999,
+      "qty": 1,
+      "notes": "Color: Blue Titanium, Storage: 256GB",
+      "status": "SUCCESS",
+      "created_at": "2025-12-24T08:47:39.164363Z"
+    }
+  ]
 }
 ```
+
+---
+
+### 8\. 🚫 Cancel Order
+
+```powershell
+$response = curl.exe -s -X DELETE http://localhost:8080/orders/$ORDER_ID `
+  -H "Authorization: Bearer $TOKEN"
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": "e4858bd8-5542-4d54-9fe1-de5ce07be721",
+    "product_name": "iPhone 15 Pro"
+  },
+  "message": "Your order has been cancelled successfully."
+}
+```
+
+---
 
 ## ⚠️ Failure Test Cases
 
-### Test Case A: 🔁 Duplicate Purchase (Idempotency) - TTL 2 minutes
+### Test Case A: 🔁 Duplicate Purchase (Idempotency)
 
-Try buying the same product again immediately.
-
-```bash
-curl.exe -X POST "http://localhost:8080/purchase" `
+```powershell
+# Try buying the same product again immediately (within 2 minutes)
+$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+  -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1}'
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
   "success": false,
-  "message": "Duplicate purchase request",
-  "error": "You already have a pending purchase for product 1"
+  "data": {
+    "product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc"
+  },
+  "message": "You already have a pending order for iPhone 15 Pro. Please wait for it to complete.",
+  "error": "DUPLICATE_PURCHASE"
 }
 ```
 
------
+---
 
 ### Test Case B: 📉 Out of Stock
 
-Try buying more than available stock (e.g., 9 units).
-
-```bash
-curl.exe -X POST http://localhost:8080/purchase `
+```powershell
+# Try buying more than available stock (MacBook has only 8 units)
+$response = curl.exe -s -X POST http://localhost:8080/purchase `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": "5d35f356-5e3c-4c41-85d5-a0f7273d82c0", "qty": 9}'
+  -d '{"product_id": "2c287f58-e30f-4eeb-91d8-4a8a4dfe2106", "qty": 10}'
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
   "success": false,
-  "message": "Out of stock",
-  "error": "Product 5d35f356-5e3c-4c41-85d5-a0f7273d82c0 is out of stock"
+  "data": {
+    "product_id": "2c287f58-e30f-4eeb-91d8-4a8a4dfe2106"
+  },
+  "message": "Sorry, MacBook Air M3 is currently out of stock.",
+  "error": "OUT_OF_STOCK"
 }
 ```
 
------
+---
 
 ### Test Case C: ⛔ Unauthorized
 
-Try accessing without a token.
-
-```bash
-curl.exe -X POST http://localhost:8080/purchase `
+```powershell
+# Try accessing without a token
+$response = curl.exe -s -X POST http://localhost:8080/purchase `
   -H "Content-Type: application/json" `
-  -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
+  -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1}'
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Response:**
 ```json
 {
   "success": false,
-  "message": "Authorization required",
-  "error": "Missing Authorization header"
+  "data": null,
+  "message": "You need to be logged in to access this resource.",
+  "error": "MISSING_AUTH_HEADER"
 }
 ```
 
------
+---
 
-### Test Case D: ⏳ Rate Limiting (120 Limit)
+### Test Case D: ❌ Invalid Credentials
 
-Spam the API with requests (Simulate loop).
+```powershell
+$response = curl.exe -s -X POST http://localhost:8080/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"email": "tester@example.com", "password": "wrongpassword"}'
+$response | ConvertFrom-Json | ConvertTo-Json -Depth 5
+```
 
-```bash
-# Run 150 requests to break the 120 limit
-1..150 | ForEach-Object {
-  $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
-    -H "Authorization: Bearer $TOKEN" `
-    -H "Content-Type: application/json" `
-    -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+**Response:**
+```json
+{
+  "success": false,
+  "data": null,
+  "message": "Invalid email or password. Please try again.",
+  "error": "INVALID_CREDENTIALS"
+}
+```
 
-  # Print only if it contains "Rate limit" to reduce noise
+---
+
+### Test Case E: ⏳ Rate Limiting (120 requests/minute)
+
+```powershell
+# Spam the API to trigger rate limiting
+for ($i = 1; $i -le 150; $i++) {
+  $response = curl.exe -s http://localhost:8080/products
   if ($response -match "Rate limit") {
-      echo $response
+    Write-Host "Request $i : Rate limited!"
+    Write-Host $response
+    break
   }
-```
-
-**Example Output:**
-
-```json
-{
-  "success": false,
-  "message": "Rate limit exceeded",
-  "error": "Too many requests. Please try again later."
 }
 ```
 
------
+**Response (after 120 requests):**
+```json
+{"error": "Too many requests. Please try again later.", "message": "Rate limit exceeded"}
+```
 
-### Test Case E: ❌ Invalid Credentials
+---
 
-Login with wrong password.
+### Test Case F: 💳 Payment Failure
 
-```bash
-curl.exe -X POST http://localhost:8080/auth/login `
+```powershell
+# Step 1: Create order with mock_fail payment method
+$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+  -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"email": "tester@example.com", "password": "wrong"}'
+  -d '{"product_id": "c452cc7b-4e6f-44e8-9f18-fe74ba3a6b6e", "qty": 1, "payment_method": "mock_fail"}'
+$json = $response | ConvertFrom-Json
+$FAIL_ORDER_ID = $json.data.order_id
+echo "Order Created: $FAIL_ORDER_ID (status: PENDING)"
+$json | ConvertTo-Json -Depth 5
+
+# Step 2: Wait for async payment processing (2 seconds)
+Start-Sleep -Seconds 2
+
+# Step 3: Check order status - should be FAILED
+$status = curl.exe -s -X GET "http://localhost:8080/orders/$FAIL_ORDER_ID" `
+  -H "Authorization: Bearer $TOKEN"
+$status | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
-**Example Output:**
-
+**Step 1 Response (Immediate - Order Created):**
 ```json
 {
-  "error": "Invalid credentials"
+  "success": true,
+  "data": {
+    "order_id": "...",
+    "product_name": "AirPods Pro",
+    "status": "PENDING"
+  },
+  "message": "Your order for AirPods Pro has been placed and is being processed."
 }
 ```
+
+**Step 3 Response (After 2 seconds - Payment Failed):**
+```json
+{
+  "success": true,
+  "data": {
+    "order_id": "...",
+    "status": "FAILED"
+  },
+  "message": "Order retrieved successfully."
+}
+```
+
+> **Note:** Payment processing is **asynchronous**. The initial response shows `PENDING`, then the order-worker processes the payment in the background. Check `GET /orders/:id` to see the final status.
+
+---
 
 ## 💾 Database Schema
 
-```sql
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+The system uses **4 separate PostgreSQL databases** for strict microservices isolation:
 
-CREATE TABLE IF NOT EXISTS users (
+### user-db (port 5433)
+```sql
+CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     role VARCHAR(50) DEFAULT 'user',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+```
 
-CREATE TABLE IF NOT EXISTS products (
+### product-db (port 5434)
+```sql
+CREATE TABLE products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
+    description TEXT,
     price INT NOT NULL,
     stock INT NOT NULL CHECK (stock >= 0)
 );
+```
 
-CREATE TABLE IF NOT EXISTS orders (
-    id UUID PRIMARY KEY,  -- This 'id' IS the order_id
-    user_id UUID NOT NULL REFERENCES users(id),
-    product_id UUID NOT NULL REFERENCES products(id),
+### order-db (port 5435)
+```sql
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+    product_name VARCHAR(255) NOT NULL,
+    product_price INT NOT NULL,
     qty INT NOT NULL,
+    notes TEXT,
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+```
 
-CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+### payment-db (port 5436)
+```sql
+CREATE TABLE payments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL,
+    amount INT NOT NULL,
+    method VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
 ```
 
 ## 📄 License
