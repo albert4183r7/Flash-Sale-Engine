@@ -1,0 +1,18 @@
+# Product Service Build
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /app
+
+COPY product-service/go.mod product-service/go.sum ./
+RUN go mod download
+
+COPY product-service/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /product-service main.go
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=builder /product-service .
+
+EXPOSE 8083
+CMD ["./product-service"]
