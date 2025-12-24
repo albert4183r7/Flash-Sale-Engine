@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/flashsale/purchase-service/client"
 	"github.com/flashsale/purchase-service/publisher"
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/google/uuid"
@@ -12,116 +13,121 @@ import (
 
 // PurchaseResult represents the result of a purchase attempt
 type PurchaseResult struct {
-	Success bool
-	OrderID uuid.UUID
-	Message string
-	Error   string
+	Success     bool
+	OrderID     uuid.UUID
+	ProductID   uuid.UUID
+	ProductName string
+	Qty         int
+	Message     string    // User-friendly message for display
+	ErrorCode   string    // Technical error code for debugging
 }
 
 // PurchaseService handles purchase logic
 type PurchaseService struct {
-	redisClient    *redis.Client
+	redisClient     *redis.Client
 	rabbitPublisher *publisher.RabbitMQ
-	idempotencyTTL int
+	productClient   *client.ProductClient
+	idempotencyTTL  int
 }
 
 // NewPurchaseService creates a new PurchaseService
-func NewPurchaseService(redisClient *redis.Client, rabbitPublisher *publisher.RabbitMQ, idempotencyTTL int) *PurchaseService {
+func NewPurchaseService(redisClient *redis.Client, rabbitPublisher *publisher.RabbitMQ, productClient *client.ProductClient, idempotencyTTL int) *PurchaseService {
 	return &PurchaseService{
-		redisClient:    redisClient,
+		redisClient:     redisClient,
 		rabbitPublisher: rabbitPublisher,
-		idempotencyTTL: idempotencyTTL,
+		productClient:   productClient,
+		idempotencyTTL:  idempotencyTTL,
 	}
 }
 
 // ProcessPurchase handles the purchase logic
-func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID uuid.UUID, qty int) PurchaseResult {
+func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID uuid.UUID, qty int, notes, paymentMethod string) PurchaseResult {
+	// Fetch product info first for better error messages
+	product, err := s.productClient.GetProduct(productID)
+	productName := "this product"
+	if err == nil && product != nil {
+		productName = product.Name
+	}
+
+	// Check idempotency
 	isFirstRequest, err := s.redisClient.SetIdempotencyKey(ctx, userID, productID, s.idempotencyTTL)
 	if err != nil {
 		return PurchaseResult{
-			Success: false,
-			Message: "Failed to check idempotency",
-			Error:   err.Error(),
+			Success:   false,
+			ProductID: productID,
+			Message:   "We couldn't process your request. Please try again.",
+			ErrorCode: "IDEMPOTENCY_CHECK_FAILED",
 		}
 	}
 
 	if !isFirstRequest {
 		return PurchaseResult{
-			Success: false,
-			Message: "Duplicate purchase request",
-			Error:   fmt.Sprintf("You already have a pending purchase for product %s", productID.String()),
+			Success:     false,
+			ProductID:   productID,
+			ProductName: productName,
+			Message:     fmt.Sprintf("You already have a pending order for %s. Please wait for it to complete.", productName),
+			ErrorCode:   "DUPLICATE_PURCHASE",
 		}
 	}
 
+	// Check and decrement stock
 	newStock, err := s.redisClient.DecrementStock(ctx, productID, qty)
 	if err != nil {
 		return PurchaseResult{
-			Success: false,
-			Message: "Failed to check stock",
-			Error:   err.Error(),
+			Success:   false,
+			ProductID: productID,
+			Message:   "Unable to check stock availability. Please try again.",
+			ErrorCode: "STOCK_CHECK_FAILED",
 		}
 	}
 
 	if newStock == -2 {
 		return PurchaseResult{
-			Success: false,
-			Message: "Product not found",
-			Error:   fmt.Sprintf("Product %s does not exist or has no stock initialized", productID.String()),
+			Success:     false,
+			ProductID:   productID,
+			ProductName: productName,
+			Message:     fmt.Sprintf("%s is not available for purchase.", productName),
+			ErrorCode:   "PRODUCT_NOT_FOUND",
 		}
 	}
 
 	if newStock < 0 {
 		return PurchaseResult{
-			Success: false,
-			Message: "Out of stock",
-			Error:   fmt.Sprintf("Product %s is out of stock", productID.String()),
+			Success:     false,
+			ProductID:   productID,
+			ProductName: productName,
+			Message:     fmt.Sprintf("Sorry, %s is currently out of stock.", productName),
+			ErrorCode:   "OUT_OF_STOCK",
 		}
 	}
 
+	// Publish order event
 	orderID := uuid.New()
 	event := publisher.OrderEvent{
-		OrderID:   orderID,
-		UserID:    userID,
-		ProductID: productID,
-		Qty:       qty,
-		Timestamp: time.Now(),
+		OrderID:       orderID,
+		UserID:        userID,
+		ProductID:     productID,
+		Qty:           qty,
+		Notes:         notes,
+		PaymentMethod: paymentMethod,
+		Timestamp:     time.Now(),
 	}
 
 	if err := s.rabbitPublisher.PublishOrderCreated(event); err != nil {
 		return PurchaseResult{
-			Success: false,
-			Message: "Failed to process order",
-			Error:   "Order could not be queued for processing",
+			Success:   false,
+			ProductID: productID,
+			Message:   "Your order couldn't be processed. Please try again.",
+			ErrorCode: "ORDER_QUEUE_FAILED",
 		}
 	}
 
 	return PurchaseResult{
-		Success: true,
-		OrderID: orderID,
-		Message: "Purchase accepted and queued for processing",
+		Success:     true,
+		OrderID:     orderID,
+		ProductID:   productID,
+		ProductName: productName,
+		Qty:         qty,
+		Message:     fmt.Sprintf("Your order for %s has been placed and is being processed.", productName),
 	}
-}
-
-// InitializeProducts sets up initial stock for products
-func (s *PurchaseService) InitializeProducts(ctx context.Context) error {
-	products := map[string]int{
-		"11111111-1111-1111-1111-111111111111": 100, // iPhone 15 Pro
-		"22222222-2222-2222-2222-222222222222": 50,  // MacBook Air M3
-		"33333333-3333-3333-3333-333333333333": 200, // AirPods Pro
-		"44444444-4444-4444-4444-444444444444": 75,  // iPad Pro
-		"55555555-5555-5555-5555-555555555555": 150, // Apple Watch
-	}
-
-	for idStr, stock := range products {
-		uid, err := uuid.Parse(idStr)
-		if err != nil {
-			return fmt.Errorf("failed to parse product UUID %s: %w", idStr, err)
-		}
-
-		if err := s.redisClient.InitializeStock(ctx, uid, stock); err != nil {
-			return fmt.Errorf("failed to initialize stock for product %s: %w", idStr, err)
-		}
-	}
-
-	return nil
 }

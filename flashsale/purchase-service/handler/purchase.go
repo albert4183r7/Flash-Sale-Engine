@@ -10,9 +10,11 @@ import (
 
 // PurchaseRequest represents an incoming purchase request
 type PurchaseRequest struct {
-	UserID    uuid.UUID `json:"user_id" binding:"required,gt=0"`
-	ProductID uuid.UUID `json:"product_id" binding:"required,gt=0"`
-	Qty       int 		`json:"qty" binding:"required,gt=0,lte=10"`
+	UserID        uuid.UUID `json:"user_id" binding:"required,gt=0"`
+	ProductID     uuid.UUID `json:"product_id" binding:"required,gt=0"`
+	Qty           int       `json:"qty" binding:"required,gt=0,lte=10"`
+	Notes         string    `json:"notes"`
+	PaymentMethod string    `json:"payment_method"`
 }
 
 // PurchaseHandler handles purchase requests
@@ -31,26 +33,36 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "Invalid request",
-			"error":   err.Error(),
+			"data":    nil,
+			"message": "Please provide valid purchase details.",
+			"error":   "INVALID_REQUEST",
 		})
 		return
 	}
 
-	result := h.purchaseService.ProcessPurchase(c.Request.Context(), req.UserID, req.ProductID, req.Qty)
+	result := h.purchaseService.ProcessPurchase(c.Request.Context(), req.UserID, req.ProductID, req.Qty, req.Notes, req.PaymentMethod)
 
 	if !result.Success {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
+			"data": gin.H{
+				"product_id": result.ProductID,
+			},
 			"message": result.Message,
-			"error":   result.Error,
+			"error":   result.ErrorCode,
 		})
 		return
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"success":  true,
-		"message":  result.Message,
-		"order_id": result.OrderID.String(),
+		"success": true,
+		"data": gin.H{
+			"order_id":     result.OrderID,
+			"product_id":   result.ProductID,
+			"product_name": result.ProductName,
+			"qty":          result.Qty,
+			"status":       "PENDING",
+		},
+		"message": result.Message,
 	})
 }

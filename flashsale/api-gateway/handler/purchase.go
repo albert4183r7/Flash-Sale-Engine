@@ -25,28 +25,43 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "Invalid request",
-			"error":   err.Error(),
+			"data":    nil,
+			"message": "Please provide valid purchase details.",
+			"error":   "INVALID_REQUEST",
 		})
 		return
 	}
 
-	userID, exists := c.Get("user_id")
+	userIDStr, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
-			"message": "User not authenticated",
-			"error":   "User ID not found in token",
+			"data":    nil,
+			"message": "You need to be logged in to make a purchase.",
+			"error":   "UNAUTHORIZED",
 		})
 		return
 	}
 
-	resp, err := h.purchaseClient.Purchase(userID.(uuid.UUID), req.ProductID, req.Qty)
+	// Parse user_id string to UUID
+	userID, err := uuid.Parse(userIDStr.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Invalid user session. Please log in again.",
+			"error":   "INVALID_USER_ID",
+		})
+		return
+	}
+
+	resp, err := h.purchaseClient.Purchase(userID, req.ProductID, req.Qty, req.Notes, req.PaymentMethod)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"success": false,
-			"message": "Purchase service unavailable",
-			"error":   err.Error(),
+			"data":    nil,
+			"message": "Our purchase system is temporarily unavailable. Please try again.",
+			"error":   "SERVICE_UNAVAILABLE",
 		})
 		return
 	}
@@ -54,6 +69,9 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 	if !resp.Success {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
+			"data": gin.H{
+				"product_id": resp.Data.ProductID,
+			},
 			"message": resp.Message,
 			"error":   resp.Error,
 		})
@@ -62,13 +80,13 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"success": true,
-		"message": resp.Message,
-		"data": dto.PurchaseResponse{
-			OrderID:   resp.OrderID,
-			Status:    "PENDING",
-			Message:   "Your order is being processed",
-			ProductID: req.ProductID,
-			Qty:       req.Qty,
+		"data": gin.H{
+			"order_id":     resp.Data.OrderID,
+			"product_id":   resp.Data.ProductID,
+			"product_name": resp.Data.ProductName,
+			"qty":          resp.Data.Qty,
+			"status":       resp.Data.Status,
 		},
+		"message": resp.Message,
 	})
 }

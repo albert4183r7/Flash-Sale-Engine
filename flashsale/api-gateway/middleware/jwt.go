@@ -6,14 +6,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 )
 
 // JWTClaims represents the claims in the JWT token
 type JWTClaims struct {
-	UserID uuid.UUID    `json:"user_id"`
-	Email  string 		`json:"email"`
-	Role   string 		`json:"role"`
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -24,8 +23,9 @@ func JWTAuth(secret string) gin.HandlerFunc {
 		if authHeader == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "Authorization required",
-				"error":   "Missing Authorization header",
+				"data":    nil,
+				"message": "You need to be logged in to access this resource.",
+				"error":   "MISSING_AUTH_HEADER",
 			})
 			return
 		}
@@ -34,8 +34,9 @@ func JWTAuth(secret string) gin.HandlerFunc {
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "Invalid authorization format",
-				"error":   "Authorization header must be: Bearer <token>",
+				"data":    nil,
+				"message": "Invalid authorization format. Please use: Bearer <token>",
+				"error":   "INVALID_AUTH_FORMAT",
 			})
 			return
 		}
@@ -53,8 +54,9 @@ func JWTAuth(secret string) gin.HandlerFunc {
 		if err != nil || !token.Valid {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "Invalid token",
-				"error":   "Token is invalid or expired",
+				"data":    nil,
+				"message": "Your session has expired. Please log in again.",
+				"error":   "INVALID_TOKEN",
 			})
 			return
 		}

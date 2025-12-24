@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"net/http"
 
 	"github.com/flashsale/api-gateway/client"
@@ -9,96 +8,188 @@ import (
 	"github.com/google/uuid"
 )
 
+// OrderHandler proxies order requests to order-service and product-service
 type OrderHandler struct {
-	db             *sql.DB
-	purchaseClient *client.PurchaseClient
+	orderClient   *client.OrderClient
+	productClient *client.ProductClient
 }
 
-func NewOrderHandler(db *sql.DB, purchaseClient *client.PurchaseClient) *OrderHandler {
-	return &OrderHandler{db: db, purchaseClient: purchaseClient}
+// NewOrderHandler creates a new OrderHandler
+func NewOrderHandler(orderClient *client.OrderClient, productClient *client.ProductClient) *OrderHandler {
+	return &OrderHandler{
+		orderClient:   orderClient,
+		productClient: productClient,
+	}
 }
 
+// GetOrder returns a single order by ID
 func (h *OrderHandler) GetOrder(c *gin.Context) {
-	orderID := c.Param("id")
-	var status string
-	err := h.db.QueryRow("SELECT status FROM orders WHERE id = $1", orderID).Scan(&status)
+	orderIDStr := c.Param("id")
+	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "The order ID provided is not valid.",
+			"error":   "INVALID_ORDER_ID",
+		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"order_id": orderID, "status": status})
+
+	order, statusCode, err := h.orderClient.GetOrder(orderID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Unable to retrieve your order. Please try again.",
+			"error":   "SERVICE_UNAVAILABLE",
+		})
+		return
+	}
+
+	if statusCode == http.StatusNotFound {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Order not found. It may have been deleted or the ID is incorrect.",
+			"error":   "ORDER_NOT_FOUND",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"order_id": order.ID,
+			"status":   order.Status,
+		},
+		"message": "Order retrieved successfully.",
+	})
 }
 
-// CancelOrder handles Soft Delete + Stock Restore (Redis & Postgres)
+// GetMyOrders returns all orders for the authenticated user
+func (h *OrderHandler) GetMyOrders(c *gin.Context) {
+	userIDStr, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "You need to be logged in to view your orders.",
+			"error":   "UNAUTHORIZED",
+		})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Invalid user session. Please log in again.",
+			"error":   "INVALID_USER_ID",
+		})
+		return
+	}
+
+	orders, err := h.orderClient.GetOrdersByUser(userID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Unable to retrieve your orders. Please try again.",
+			"error":   "SERVICE_UNAVAILABLE",
+		})
+		return
+	}
+
+	orderCount := 0
+	if orders.Orders != nil {
+		orderCount = len(orders.Orders)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    orders,
+		"message": getOrdersMessage(orderCount),
+	})
+}
+
+// CancelOrder cancels an order and restores stock
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	orderIDStr := c.Param("id")
 	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid UUID"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "The order ID provided is not valid.",
+			"error":   "INVALID_ORDER_ID",
+		})
 		return
 	}
 
-	// 1. Get Order Details
-	var productID uuid.UUID
-	var qty int
-	var status string
-	// Use QueryRowContext for better timeout control
-	err = h.db.QueryRowContext(c, "SELECT product_id, qty, status FROM orders WHERE id = $1", orderID).Scan(&productID, &qty, &status)
+	result, statusCode, err := h.orderClient.CancelOrder(orderID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Unable to cancel your order. Please try again.",
+			"error":   "SERVICE_UNAVAILABLE",
+		})
 		return
 	}
 
-	if status == "CANCELLED" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Order already cancelled"})
+	if statusCode == http.StatusNotFound {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Order not found. It may have already been processed or cancelled.",
+			"error":   "ORDER_NOT_FOUND",
+		})
 		return
 	}
 
-	// 2. Restore Stock in Redis (Cache Layer)
-	// We do this *before* the DB transaction. If Redis fails, we stop here.
-	// In a distributed system, this might lead to race conditions, but for flash sales,
-	// keeping Redis accurate is priority #1 for availability.
-	err = h.purchaseClient.RestoreStock(productID, qty)
+	if !result.Success {
+		c.JSON(statusCode, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": result.Error,
+			"error":   "CANCEL_FAILED",
+		})
+		return
+	}
+
+	// Restore stock in product-service
+	err = h.productClient.RestoreStock(result.ProductID, result.Qty)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Failed to restore stock in cache"})
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"order_id":     orderID,
+				"product_name": result.ProductName,
+			},
+			"message": "Your order has been cancelled, but stock restoration is pending.",
+			"warning": "STOCK_RESTORE_PENDING",
+		})
 		return
 	}
 
-	// 3. Database Transaction (Persistence Layer)
-	// We wrap the Status Update and Stock Restoration in a transaction for atomicity.
-	tx, err := h.db.BeginTx(c, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start database transaction"})
-		return
-	}
-	// Defer a rollback in case of panic or error, though we commit explicitly at the end.
-	defer tx.Rollback()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"order_id":     orderID,
+			"product_name": result.ProductName,
+		},
+		"message": "Your order has been cancelled successfully.",
+	})
+}
 
-	// 3a. Update Order Status
-	res, err := tx.ExecContext(c, "UPDATE orders SET status = 'CANCELLED' WHERE id = $1", orderID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
-		return
+// getOrdersMessage returns a user-friendly message based on order count
+func getOrdersMessage(count int) string {
+	if count == 0 {
+		return "You don't have any orders yet."
+	} else if count == 1 {
+		return "You have 1 order."
 	}
-	
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "Order was updated by another process"})
-		return
-	}
-
-	// 3b. Restore Stock in PostgreSQL (The missing piece)
-	_, err = tx.ExecContext(c, "UPDATE products SET stock = stock + $1 WHERE id = $2", qty, productID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restore stock in database"})
-		return
-	}
-
-	// 4. Commit Transaction
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Order cancelled and stock restored successfully"})
+	return "Here are your orders."
 }
