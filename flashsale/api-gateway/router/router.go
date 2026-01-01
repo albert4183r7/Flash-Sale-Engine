@@ -17,7 +17,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	rateLimiter := middleware.NewRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow)
 	r.Use(rateLimiter.RateLimit())
 
-	// Health check
+	// Health check (outside versioning for monitoring tools)
 	healthHandler := handler.NewHealthHandler()
 	r.GET("/health", healthHandler.Health)
 
@@ -27,31 +27,41 @@ func Setup(cfg *config.Config) *gin.Engine {
 	orderClient := client.NewOrderClient(cfg.OrderServiceURL)
 	purchaseClient := client.NewPurchaseClient(cfg.PurchaseServiceURL)
 
-	// Auth routes (proxied to user-service)
+	// Initialize handlers
 	authHandler := handler.NewAuthHandler(userClient)
-	auth := r.Group("/auth")
+	productHandler := handler.NewProductHandler(productClient)
+	purchaseHandler := handler.NewPurchaseHandler(purchaseClient)
+	orderHandler := handler.NewOrderHandler(orderClient, productClient)
+
+	// ===========================================
+	// API v1 Routes
+	// ===========================================
+	v1 := r.Group("/api/v1")
+
+	// Auth routes (public)
+	auth := v1.Group("/auth")
 	{
 		auth.POST("/signup", authHandler.Signup)
 		auth.POST("/login", authHandler.Login)
 	}
 
-	// Public product routes (proxied to product-service)
-	productHandler := handler.NewProductHandler(productClient)
-	r.GET("/products", productHandler.ListProducts)
-	r.GET("/products/:id", productHandler.GetProduct)
-	r.GET("/products/:id/stock", productHandler.GetStock)
-
-	// Protected routes
-	purchaseHandler := handler.NewPurchaseHandler(purchaseClient)
-	orderHandler := handler.NewOrderHandler(orderClient, productClient)
-
-	protected := r.Group("/")
-	protected.Use(middleware.JWTAuth(cfg.JWTSecret))
+	// Product routes (public)
+	products := v1.Group("/products")
 	{
-		protected.POST("/purchase", purchaseHandler.Purchase)
-		protected.GET("/orders/:id", orderHandler.GetOrder)
-		protected.GET("/my-orders", orderHandler.GetMyOrders)
-		protected.DELETE("/orders/:id", orderHandler.CancelOrder)
+		products.GET("", productHandler.ListProducts)
+		products.GET("/:id", productHandler.GetProduct)
+		products.GET("/:id/stock", productHandler.GetStock)
+	}
+
+	// User routes (protected - requires JWT)
+	users := v1.Group("/users")
+	users.Use(middleware.JWTAuth(cfg.JWTSecret))
+	{
+		// Orders under user resource (RESTful pattern)
+		users.POST("/:user_id/orders", purchaseHandler.CreateOrder)
+		users.GET("/:user_id/orders", orderHandler.GetUserOrders)
+		users.GET("/:user_id/orders/:order_id", orderHandler.GetOrder)
+		users.DELETE("/:user_id/orders/:order_id", orderHandler.CancelOrder)
 	}
 
 	return r

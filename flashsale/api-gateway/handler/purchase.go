@@ -19,8 +19,55 @@ func NewPurchaseHandler(purchaseClient *client.PurchaseClient) *PurchaseHandler 
 	return &PurchaseHandler{purchaseClient: purchaseClient}
 }
 
-// Purchase handles a purchase request
-func (h *PurchaseHandler) Purchase(c *gin.Context) {
+// CreateOrder handles a purchase request (POST /api/v1/users/:user_id/orders)
+func (h *PurchaseHandler) CreateOrder(c *gin.Context) {
+	// Get user_id from URL param
+	userIDParam := c.Param("user_id")
+	urlUserID, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "The user ID provided in the URL is not valid.",
+			"error":   "INVALID_USER_ID",
+		})
+		return
+	}
+
+	// Get user_id from JWT context
+	jwtUserIDStr, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "You need to be logged in to make a purchase.",
+			"error":   "UNAUTHORIZED",
+		})
+		return
+	}
+
+	jwtUserID, err := uuid.Parse(jwtUserIDStr.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Invalid user session. Please log in again.",
+			"error":   "INVALID_SESSION",
+		})
+		return
+	}
+
+	// Validate that JWT user matches URL user
+	if urlUserID != jwtUserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "You do not have permission to create orders for this user.",
+			"error":   "FORBIDDEN",
+		})
+		return
+	}
+
 	var req dto.PurchaseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -32,30 +79,7 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		return
 	}
 
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"data":    nil,
-			"message": "You need to be logged in to make a purchase.",
-			"error":   "UNAUTHORIZED",
-		})
-		return
-	}
-
-	// Parse user_id string to UUID
-	userID, err := uuid.Parse(userIDStr.(string))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"data":    nil,
-			"message": "Invalid user session. Please log in again.",
-			"error":   "INVALID_USER_ID",
-		})
-		return
-	}
-
-	resp, err := h.purchaseClient.Purchase(userID, req.ProductID, req.Qty, req.Notes, req.PaymentMethod)
+	resp, err := h.purchaseClient.Purchase(urlUserID, req.ProductID, req.Qty, req.Notes)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"success": false,
@@ -82,6 +106,7 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		"success": true,
 		"data": gin.H{
 			"order_id":     resp.Data.OrderID,
+			"user_id":      urlUserID,
 			"product_id":   resp.Data.ProductID,
 			"product_name": resp.Data.ProductName,
 			"qty":          resp.Data.Qty,

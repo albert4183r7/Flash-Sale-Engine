@@ -11,8 +11,7 @@ flashsale/
 ├── 📦 product-service/      # Product catalog & stock management
 ├── 📋 order-service/        # Order CRUD & status management
 ├── ⚡ purchase-service/     # High-speed purchase logic (Redis, RabbitMQ)
-├── � payment-service/      # Mock payment processing
-├── �👷 order-worker/         # Async order processing (RabbitMQ Consumer)
+├── 👷 order-worker/         # Async order processing (RabbitMQ Consumer)
 ├── 📜 migrations/           # Service-specific SQL schemas
 ├── 🌱 scripts/              # Utility scripts (Seeding)
 ├── 🐳 deployments/          # Docker configurations
@@ -31,8 +30,7 @@ Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at on
 3.  **📦 Product Service:** Manages product catalog and Redis-based stock operations.
 4.  **📋 Order Service:** Stores and manages order lifecycle.
 5.  **⚡ Purchase Service:** High-speed purchase logic using Redis atomic operations.
-6.  **� Payment Service:** Mock payment processing for development/testing.
-7.  **�👷 Order Worker:** Async background worker that processes orders and payments.
+6.  **👷 Order Worker:** Async background worker that processes orders.
 
 ---
 
@@ -61,14 +59,12 @@ graph TD
     US --> UserDB[(user-db :5433)]
     ProdS --> ProductDB[(product-db :5434)]
     OS --> OrderDB[(order-db :5435)]
-    PayS[💳 Payment Service :8086] --> PaymentDB[(payment-db :5436)]
     ProdS --> Redis[(Redis)]
     PS --> Redis
     PS --> RMQ[RabbitMQ]
     RMQ --> OW[👷 Order Worker]
     OW --> OS
     OW --> ProdS
-    OW --> PayS
 ```
 
 ## 🛠️ Core Technologies
@@ -105,17 +101,20 @@ cd scripts && go run seed.go
 
 All endpoints go through the **API Gateway** at `http://localhost:8080`.
 
+> **API Version**: v1 - All endpoints are prefixed with `/api/v1`
+
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/auth/signup` | Create new user | No |
-| POST | `/auth/login` | Get JWT token | No |
-| GET | `/products` | List all products | No |
-| GET | `/products/:id` | Get product details | No |
-| GET | `/products/:id/stock` | Get current stock | No |
-| POST | `/purchase` | Make a purchase | Yes |
-| GET | `/orders/:id` | Get order by ID | Yes |
-| GET | `/my-orders` | Get user's orders | Yes |
-| DELETE | `/orders/:id` | Cancel order | Yes |
+| GET | `/health` | Health check | No |
+| POST | `/api/v1/auth/signup` | Create new user | No |
+| POST | `/api/v1/auth/login` | Get JWT token | No |
+| GET | `/api/v1/products` | List all products | No |
+| GET | `/api/v1/products/:id` | Get product details | No |
+| GET | `/api/v1/products/:id/stock` | Get current stock | No |
+| POST | `/api/v1/users/:user_id/orders` | Create order (purchase) | Yes |
+| GET | `/api/v1/users/:user_id/orders` | Get user's orders | Yes |
+| GET | `/api/v1/users/:user_id/orders/:order_id` | Get order by ID | Yes |
+| DELETE | `/api/v1/users/:user_id/orders/:order_id` | Cancel order | Yes |
 
 ---
 
@@ -124,7 +123,7 @@ All endpoints go through the **API Gateway** at `http://localhost:8080`.
 ### 1\. 📝 Sign Up
 
 ```powershell
-$response = curl.exe -s -X POST http://localhost:8080/auth/signup `
+$response = curl.exe -s -X POST http://localhost:8080/api/v1/auth/signup `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
@@ -146,12 +145,13 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ### 2\. 🔑 Login
 
 ```powershell
-$response = curl.exe -s -X POST "http://localhost:8080/auth/login" `
+$response = curl.exe -s -X POST "http://localhost:8080/api/v1/auth/login" `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "password123"}'
 
 $json = $response | ConvertFrom-Json
 $TOKEN = $json.data.token
+$USER_ID = $json.data.user_id
 $json | ConvertTo-Json -Depth 5
 ```
 
@@ -175,7 +175,7 @@ $json | ConvertTo-Json -Depth 5
 ### 3\. 📦 List Products
 
 ```powershell
-$response = curl.exe -s http://localhost:8080/products
+$response = curl.exe -s http://localhost:8080/api/v1/products
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
@@ -199,7 +199,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ### 4\. 📊 Get Product Stock
 
 ```powershell
-$response = curl.exe -s http://localhost:8080/products/9b633b6b-4384-42ea-9675-2c3788f8e4bc/stock
+$response = curl.exe -s http://localhost:8080/api/v1/products/9b633b6b-4384-42ea-9675-2c3788f8e4bc/stock
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
 
@@ -213,15 +213,15 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 
 ---
 
-### 5\. 🛍️ Purchase Item
+### 5\. 🛍️ Create Order (Purchase)
 
 ```powershell
-# Add "notes" for variants and "payment_method" for payment simulation
-# Payment methods: mock_success (default), mock_fail, mock_pending
-$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+# Add "notes" for order variants
+# Note: USER_ID in URL must match your JWT token
+$response = curl.exe -s -X POST "http://localhost:8080/api/v1/users/$USER_ID/orders" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1, "notes": "Color: Blue", "payment_method": "mock_success"}'
+  -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1, "notes": "Color: Blue"}'
 
 $json = $response | ConvertFrom-Json
 $ORDER_ID = $json.data.order_id
@@ -249,7 +249,7 @@ $json | ConvertTo-Json -Depth 5
 ### 6\. 🔍 Check Order Status
 
 ```powershell
-$response = curl.exe -s -X GET http://localhost:8080/orders/$ORDER_ID `
+$response = curl.exe -s -X GET "http://localhost:8080/api/v1/users/$USER_ID/orders/$ORDER_ID" `
   -H "Authorization: Bearer $TOKEN"
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
@@ -268,10 +268,10 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 
 ---
 
-### 7\. 📋 Get My Orders
+### 7\. 📋 Get User Orders
 
 ```powershell
-$response = curl.exe -s http://localhost:8080/my-orders `
+$response = curl.exe -s "http://localhost:8080/api/v1/users/$USER_ID/orders" `
   -H "Authorization: Bearer $TOKEN"
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
@@ -300,7 +300,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ### 8\. 🚫 Cancel Order
 
 ```powershell
-$response = curl.exe -s -X DELETE http://localhost:8080/orders/$ORDER_ID `
+$response = curl.exe -s -X DELETE "http://localhost:8080/api/v1/users/$USER_ID/orders/$ORDER_ID" `
   -H "Authorization: Bearer $TOKEN"
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```
@@ -325,7 +325,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 
 ```powershell
 # Try buying the same product again immediately (within 2 minutes)
-$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
+$response = curl.exe -s -X POST "http://localhost:8080/api/v1/users/$USER_ID/orders" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
   -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1}'
@@ -350,7 +350,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 
 ```powershell
 # Try buying more than available stock (MacBook has only 8 units)
-$response = curl.exe -s -X POST http://localhost:8080/purchase `
+$response = curl.exe -s -X POST "http://localhost:8080/api/v1/users/$USER_ID/orders" `
   -H "Authorization: Bearer $TOKEN" `
   -H "Content-Type: application/json" `
   -d '{"product_id": "2c287f58-e30f-4eeb-91d8-4a8a4dfe2106", "qty": 10}'
@@ -374,8 +374,8 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ### Test Case C: ⛔ Unauthorized
 
 ```powershell
-# Try accessing without a token
-$response = curl.exe -s -X POST http://localhost:8080/purchase `
+# Try accessing without a token (replace with any valid UUID)
+$response = curl.exe -s -X POST "http://localhost:8080/api/v1/users/550e8400-e29b-41d4-a716-446655440000/orders" `
   -H "Content-Type: application/json" `
   -d '{"product_id": "9b633b6b-4384-42ea-9675-2c3788f8e4bc", "qty": 1}'
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
@@ -396,7 +396,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ### Test Case D: ❌ Invalid Credentials
 
 ```powershell
-$response = curl.exe -s -X POST http://localhost:8080/auth/login `
+$response = curl.exe -s -X POST http://localhost:8080/api/v1/auth/login `
   -H "Content-Type: application/json" `
   -d '{"email": "tester@example.com", "password": "wrongpassword"}'
 $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
@@ -419,7 +419,7 @@ $response | ConvertFrom-Json | ConvertTo-Json -Depth 5
 ```powershell
 # Spam the API to trigger rate limiting
 for ($i = 1; $i -le 150; $i++) {
-  $response = curl.exe -s http://localhost:8080/products
+  $response = curl.exe -s http://localhost:8080/api/v1/products
   if ($response -match "Rate limit") {
     Write-Host "Request $i : Rate limited!"
     Write-Host $response
@@ -435,60 +435,9 @@ for ($i = 1; $i -le 150; $i++) {
 
 ---
 
-### Test Case F: 💳 Payment Failure
-
-```powershell
-# Step 1: Create order with mock_fail payment method
-$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": "c452cc7b-4e6f-44e8-9f18-fe74ba3a6b6e", "qty": 1, "payment_method": "mock_fail"}'
-$json = $response | ConvertFrom-Json
-$FAIL_ORDER_ID = $json.data.order_id
-echo "Order Created: $FAIL_ORDER_ID (status: PENDING)"
-$json | ConvertTo-Json -Depth 5
-
-# Step 2: Wait for async payment processing (2 seconds)
-Start-Sleep -Seconds 2
-
-# Step 3: Check order status - should be FAILED
-$status = curl.exe -s -X GET "http://localhost:8080/orders/$FAIL_ORDER_ID" `
-  -H "Authorization: Bearer $TOKEN"
-$status | ConvertFrom-Json | ConvertTo-Json -Depth 5
-```
-
-**Step 1 Response (Immediate - Order Created):**
-```json
-{
-  "success": true,
-  "data": {
-    "order_id": "...",
-    "product_name": "AirPods Pro",
-    "status": "PENDING"
-  },
-  "message": "Your order for AirPods Pro has been placed and is being processed."
-}
-```
-
-**Step 3 Response (After 2 seconds - Payment Failed):**
-```json
-{
-  "success": true,
-  "data": {
-    "order_id": "...",
-    "status": "FAILED"
-  },
-  "message": "Order retrieved successfully."
-}
-```
-
-> **Note:** Payment processing is **asynchronous**. The initial response shows `PENDING`, then the order-worker processes the payment in the background. Check `GET /orders/:id` to see the final status.
-
----
-
 ## 💾 Database Schema
 
-The system uses **4 separate PostgreSQL databases** for strict microservices isolation:
+The system uses **3 separate PostgreSQL databases** for strict microservices isolation:
 
 ### user-db (port 5433)
 ```sql
@@ -527,18 +476,68 @@ CREATE TABLE orders (
 );
 ```
 
-### payment-db (port 5436)
-```sql
-CREATE TABLE payments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID NOT NULL,
-    amount INT NOT NULL,
-    method VARCHAR(50) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
+## ☁️ GCP GKE Autopilot Deployment
+
+This project is designed for **GKE Autopilot** in the Jakarta region (`asia-southeast2`) for optimal performance and Indonesian data residency compliance.
+
+### Prerequisites
+- Google Cloud SDK installed (`gcloud`)
+- `kubectl` installed
+- Terraform >= 1.5 installed
+- GCP project with billing enabled (Free Trial $300 works!)
+
+### Quick Deploy (6 Services)
+
+```bash
+# 1. Enable required APIs
+gcloud services enable container.googleapis.com sqladmin.googleapis.com \
+  redis.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com \
+  artifactregistry.googleapis.com cloudbuild.googleapis.com servicenetworking.googleapis.com
+
+# 2. Deploy infrastructure with Terraform
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your project ID and secrets
+terraform init && terraform apply
+
+# 3. Get cluster credentials
+gcloud container clusters get-credentials flashsale-cluster \
+  --region asia-southeast2 --project YOUR_PROJECT_ID
+
+# 4. Create secrets
+kubectl apply -f k8s/namespace.yaml
+kubectl create secret generic flashsale-secrets --namespace flashsale \
+  --from-literal=jwt-secret=YOUR_JWT_SECRET \
+  --from-literal=db-password=YOUR_DB_PASSWORD
+
+# 5. Build and push images
+export PROJECT_ID=your-project-id REGION=asia-southeast2
+gcloud auth configure-docker ${REGION}-docker.pkg.dev
+cd flashsale
+for svc in api-gateway user-service product-service order-service purchase-service order-worker; do
+  docker build -f deployments/Dockerfile.$svc -t ${REGION}-docker.pkg.dev/${PROJECT_ID}/flashsale/${svc}:latest .
+  docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/flashsale/${svc}:latest
+done
+
+# 6. Deploy to GKE
+cd ../k8s
+kubectl apply -f namespace.yaml -f service-account.yaml -f configmap.yaml -f services/
 ```
 
-## 📄 License
+### Production Infrastructure
+| Component | GCP Service | Configuration |
+|-----------|-------------|---------------|
+| Compute | GKE Autopilot | Zero cold starts, auto-scaling |
+| Databases | Cloud SQL (PostgreSQL 17) | 3 HA databases |
+| Cache | Memorystore (Redis 7) | HA with replica |
+| Messaging | Cloud Pub/Sub | Replaces RabbitMQ |
+| Secrets | Secret Manager | JWT & DB credentials |
+| Container Registry | Artifact Registry | Private Docker images |
+
+> 📖 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed deployment guide and [flashsale/docs/architecture.md](flashsale/docs/architecture.md) for architecture diagrams.
+
+---
+
+## �📄 License
 
 MIT - Use for portfolio or personal projects!

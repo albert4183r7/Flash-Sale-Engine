@@ -18,13 +18,12 @@ const (
 )
 
 type OrderEvent struct {
-	OrderID       uuid.UUID `json:"order_id"`
-	UserID        uuid.UUID `json:"user_id"`
-	ProductID     uuid.UUID `json:"product_id"`
-	Qty           int       `json:"qty"`
-	Notes         string    `json:"notes,omitempty"`
-	PaymentMethod string    `json:"payment_method,omitempty"`
-	Timestamp     time.Time `json:"timestamp"`
+	OrderID   uuid.UUID `json:"order_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
+	Qty       int       `json:"qty"`
+	Notes     string    `json:"notes,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type RabbitMQConsumer struct {
@@ -32,11 +31,10 @@ type RabbitMQConsumer struct {
 	channel       *amqp.Channel
 	orderClient   *client.OrderServiceClient
 	productClient *client.ProductServiceClient
-	paymentClient *client.PaymentServiceClient
 }
 
 // NewRabbitMQConsumer creates a new RabbitMQ consumer with HTTP clients
-func NewRabbitMQConsumer(url string, orderClient *client.OrderServiceClient, productClient *client.ProductServiceClient, paymentClient *client.PaymentServiceClient) (*RabbitMQConsumer, error) {
+func NewRabbitMQConsumer(url string, orderClient *client.OrderServiceClient, productClient *client.ProductServiceClient) (*RabbitMQConsumer, error) {
 	var conn *amqp.Connection
 	var err error
 
@@ -107,7 +105,6 @@ func NewRabbitMQConsumer(url string, orderClient *client.OrderServiceClient, pro
 		channel:       channel,
 		orderClient:   orderClient,
 		productClient: productClient,
-		paymentClient: paymentClient,
 	}, nil
 }
 
@@ -190,39 +187,19 @@ func (c *RabbitMQConsumer) processMessage(msg amqp.Delivery) {
 		return
 	}
 
-	// 3. Process Payment via Payment Service
-	paymentMethod := event.PaymentMethod
-	if paymentMethod == "" {
-		paymentMethod = "mock_success" // Default to success for testing
-	}
-	
-	totalAmount := product.Price * event.Qty
-	paymentResult, err := c.paymentClient.ProcessPayment(event.OrderID, totalAmount, paymentMethod)
-	if err != nil {
-		log.Printf("Payment Service Error: %v", err)
-		// Update order to FAILED
-		c.orderClient.UpdateOrderStatus(event.OrderID, "FAILED")
-		msg.Ack(false)
-		return
+	// 3. Mark order as SUCCESS (no payment service needed)
+	orderStatus := "SUCCESS"
+
+	// 4. Sync stock to DB (eventual consistency)
+	if err := c.productClient.SyncStockToDB(event.ProductID, event.Qty); err != nil {
+		log.Printf("Product Service Stock Sync Error: %v", err)
 	}
 
-	// 4. Update Order Status based on payment result
-	var orderStatus string
-	if paymentResult.Success {
-		orderStatus = "SUCCESS"
-		// Sync stock to DB (eventual consistency)
-		if err := c.productClient.SyncStockToDB(event.ProductID, event.Qty); err != nil {
-			log.Printf("Product Service Stock Sync Error: %v", err)
-		}
-	} else {
-		orderStatus = "FAILED"
-		log.Printf("Payment failed for order %s: %s", event.OrderID, paymentResult.Message)
-	}
-
+	// 5. Update order status
 	if err := c.orderClient.UpdateOrderStatus(event.OrderID, orderStatus); err != nil {
 		log.Printf("Failed to update order status: %v", err)
 	}
 
-	log.Printf("Order %s processed with status: %s (Payment: %s)", event.OrderID, orderStatus, paymentResult.Status)
+	log.Printf("Order %s processed with status: %s", event.OrderID, orderStatus)
 	msg.Ack(false)
 }

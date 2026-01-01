@@ -5,8 +5,7 @@
 // a purchase, we immediately reserve stock in Redis and publish an OrderEvent to
 // RabbitMQ. The order-worker then consumes these events asynchronously to:
 //  1. Create the order in PostgreSQL
-//  2. Process payment via payment-service
-//  3. Update order status based on payment result
+//  2. Update order status to SUCCESS
 //
 // This decouples the fast purchase path from slower database operations,
 // allowing the system to handle thousands of concurrent purchases.
@@ -38,13 +37,12 @@ const (
 
 // OrderEvent represents the message published to RabbitMQ
 type OrderEvent struct {
-	OrderID       uuid.UUID `json:"order_id"`
-	UserID        uuid.UUID `json:"user_id"`
-	ProductID     uuid.UUID `json:"product_id"`
-	Qty           int       `json:"qty"`
-	Notes         string    `json:"notes,omitempty"`
-	PaymentMethod string    `json:"payment_method,omitempty"`
-	Timestamp     time.Time `json:"timestamp"`
+	OrderID   uuid.UUID `json:"order_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
+	Qty       int       `json:"qty"`
+	Notes     string    `json:"notes,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // RabbitMQ wraps RabbitMQ connection and channel

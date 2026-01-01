@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -76,16 +77,11 @@ func (c *StockCache) IncrementStock(ctx context.Context, productID uuid.UUID, qt
 	return int(val), err
 }
 
-// SetIdempotencyKey sets a key to prevent duplicate purchases
+// SetIdempotencyKey sets a key to prevent duplicate purchases.
+// Uses SetNX for atomic check-and-set with proper TTL.
 func (c *StockCache) SetIdempotencyKey(ctx context.Context, userID, productID uuid.UUID, ttlSeconds int) (bool, error) {
 	key := fmt.Sprintf("idem:%s:%s", userID.String(), productID.String())
-	result, err := c.client.SetNX(ctx, key, "1", 0).Result()
-	if err != nil {
-		return false, err
-	}
-	if result {
-		// Set TTL separately
-		c.client.Expire(ctx, key, redis.KeepTTL)
-	}
-	return result, nil
+	result, err := c.client.SetNX(ctx, key, "1", time.Duration(ttlSeconds)*time.Second).Result()
+	return result, err
 }
+

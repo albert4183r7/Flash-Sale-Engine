@@ -26,11 +26,10 @@ func NewPurchaseClient(baseURL string) *PurchaseClient {
 
 // PurchaseRequest represents a purchase request to purchase-service
 type PurchaseRequest struct {
-	UserID        uuid.UUID `json:"user_id"`
-	ProductID     uuid.UUID `json:"product_id"`
-	Qty           int       `json:"qty"`
-	Notes         string    `json:"notes,omitempty"`
-	PaymentMethod string    `json:"payment_method,omitempty"`
+	UserID    uuid.UUID `json:"user_id"`
+	ProductID uuid.UUID `json:"product_id"`
+	Qty       int       `json:"qty"`
+	Notes     string    `json:"notes,omitempty"`
 }
 
 // PurchaseData contains the data portion of the response
@@ -51,13 +50,12 @@ type PurchaseResponse struct {
 }
 
 // Purchase sends a purchase request to purchase-service
-func (c *PurchaseClient) Purchase(userID, productID uuid.UUID, qty int, notes, paymentMethod string) (*PurchaseResponse, error) {
+func (c *PurchaseClient) Purchase(userID, productID uuid.UUID, qty int, notes string) (*PurchaseResponse, error) {
 	req := PurchaseRequest{
-		UserID:        userID,
-		ProductID:     productID,
-		Qty:           qty,
-		Notes:         notes,
-		PaymentMethod: paymentMethod,
+		UserID:    userID,
+		ProductID: productID,
+		Qty:       qty,
+		Notes:     notes,
 	}
 	body, _ := json.Marshal(req)
 

@@ -10,11 +10,10 @@ import (
 
 // PurchaseRequest represents an incoming purchase request
 type PurchaseRequest struct {
-	UserID        uuid.UUID `json:"user_id" binding:"required,gt=0"`
-	ProductID     uuid.UUID `json:"product_id" binding:"required,gt=0"`
-	Qty           int       `json:"qty" binding:"required,gt=0,lte=10"`
-	Notes         string    `json:"notes"`
-	PaymentMethod string    `json:"payment_method"`
+	UserID    uuid.UUID `json:"user_id" binding:"required,gt=0"`
+	ProductID uuid.UUID `json:"product_id" binding:"required,gt=0"`
+	Qty       int       `json:"qty" binding:"required,gt=0,lte=10"`
+	Notes     string    `json:"notes"`
 }
 
 // PurchaseHandler handles purchase requests
@@ -40,7 +39,7 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		return
 	}
 
-	result := h.purchaseService.ProcessPurchase(c.Request.Context(), req.UserID, req.ProductID, req.Qty, req.Notes, req.PaymentMethod)
+	result := h.purchaseService.ProcessPurchase(c.Request.Context(), req.UserID, req.ProductID, req.Qty, req.Notes)
 
 	if !result.Success {
 		c.JSON(http.StatusBadRequest, gin.H{

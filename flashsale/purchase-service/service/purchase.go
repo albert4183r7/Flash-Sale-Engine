@@ -18,8 +18,8 @@ type PurchaseResult struct {
 	ProductID   uuid.UUID
 	ProductName string
 	Qty         int
-	Message     string    // User-friendly message for display
-	ErrorCode   string    // Technical error code for debugging
+	Message     string // User-friendly message for display
+	ErrorCode   string // Technical error code for debugging
 }
 
 // PurchaseService handles purchase logic
@@ -41,7 +41,7 @@ func NewPurchaseService(redisClient *redis.Client, rabbitPublisher *publisher.Ra
 }
 
 // ProcessPurchase handles the purchase logic
-func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID uuid.UUID, qty int, notes, paymentMethod string) PurchaseResult {
+func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID uuid.UUID, qty int, notes string) PurchaseResult {
 	// Fetch product info first for better error messages
 	product, err := s.productClient.GetProduct(productID)
 	productName := "this product"
@@ -104,13 +104,12 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 	// Publish order event
 	orderID := uuid.New()
 	event := publisher.OrderEvent{
-		OrderID:       orderID,
-		UserID:        userID,
-		ProductID:     productID,
-		Qty:           qty,
-		Notes:         notes,
-		PaymentMethod: paymentMethod,
-		Timestamp:     time.Now(),
+		OrderID:   orderID,
+		UserID:    userID,
+		ProductID: productID,
+		Qty:       qty,
+		Notes:     notes,
+		Timestamp: time.Now(),
 	}
 
 	if err := s.rabbitPublisher.PublishOrderCreated(event); err != nil {

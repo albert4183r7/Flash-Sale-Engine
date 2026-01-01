@@ -1,22 +1,28 @@
-FROM golang:1.23-alpine AS builder
+# =============================================================================
+# Order Worker - Multi-stage Distroless Dockerfile
+# =============================================================================
+
+# Stage 1: Build
+FROM golang:1.23 AS builder
 
 WORKDIR /app
-
-RUN apk add --no-cache git
 
 COPY order-worker/go.mod order-worker/go.sum ./
 RUN go mod download
 
 COPY order-worker/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o order-worker .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.version=${VERSION:-dev}" \
+    -o /order-worker .
 
-FROM alpine:latest
+# Stage 2: Runtime (Distroless)
+FROM gcr.io/distroless/static-debian12:nonroot
 
-RUN apk --no-cache add ca-certificates
+COPY --from=builder /order-worker /order-worker
 
-WORKDIR /root/
+USER nonroot:nonroot
 
-COPY --from=builder /app/order-worker .
+# No port exposed - worker pulls from Pub/Sub
 
-CMD ["./order-worker"]
+ENTRYPOINT ["/order-worker"]

@@ -22,9 +22,66 @@ func NewOrderHandler(orderClient *client.OrderClient, productClient *client.Prod
 	}
 }
 
+// validateUserAccess validates that the JWT user_id matches the URL user_id
+func validateUserAccess(c *gin.Context) (uuid.UUID, bool) {
+	// Get user_id from URL param
+	userIDParam := c.Param("user_id")
+	urlUserID, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "The user ID provided in the URL is not valid.",
+			"error":   "INVALID_USER_ID",
+		})
+		return uuid.Nil, false
+	}
+
+	// Get user_id from JWT context
+	jwtUserIDStr, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "You need to be logged in to access this resource.",
+			"error":   "UNAUTHORIZED",
+		})
+		return uuid.Nil, false
+	}
+
+	jwtUserID, err := uuid.Parse(jwtUserIDStr.(string))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "Invalid user session. Please log in again.",
+			"error":   "INVALID_SESSION",
+		})
+		return uuid.Nil, false
+	}
+
+	// Validate that JWT user matches URL user (prevent unauthorized access)
+	if urlUserID != jwtUserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"data":    nil,
+			"message": "You do not have permission to access this user's resources.",
+			"error":   "FORBIDDEN",
+		})
+		return uuid.Nil, false
+	}
+
+	return urlUserID, true
+}
+
 // GetOrder returns a single order by ID
 func (h *OrderHandler) GetOrder(c *gin.Context) {
-	orderIDStr := c.Param("id")
+	userID, ok := validateUserAccess(c)
+	if !ok {
+		return
+	}
+
+	orderIDStr := c.Param("order_id")
 	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -61,33 +118,17 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 		"success": true,
 		"data": gin.H{
 			"order_id": order.ID,
+			"user_id":  userID,
 			"status":   order.Status,
 		},
 		"message": "Order retrieved successfully.",
 	})
 }
 
-// GetMyOrders returns all orders for the authenticated user
-func (h *OrderHandler) GetMyOrders(c *gin.Context) {
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"data":    nil,
-			"message": "You need to be logged in to view your orders.",
-			"error":   "UNAUTHORIZED",
-		})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr.(string))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"data":    nil,
-			"message": "Invalid user session. Please log in again.",
-			"error":   "INVALID_USER_ID",
-		})
+// GetUserOrders returns all orders for the specified user
+func (h *OrderHandler) GetUserOrders(c *gin.Context) {
+	userID, ok := validateUserAccess(c)
+	if !ok {
 		return
 	}
 
@@ -116,7 +157,12 @@ func (h *OrderHandler) GetMyOrders(c *gin.Context) {
 
 // CancelOrder cancels an order and restores stock
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
-	orderIDStr := c.Param("id")
+	_, ok := validateUserAccess(c)
+	if !ok {
+		return
+	}
+
+	orderIDStr := c.Param("order_id")
 	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{

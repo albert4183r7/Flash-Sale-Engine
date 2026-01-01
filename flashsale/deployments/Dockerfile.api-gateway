@@ -1,24 +1,33 @@
-FROM golang:1.23-alpine AS builder
+# =============================================================================
+# API Gateway - Multi-stage Distroless Dockerfile
+# =============================================================================
+
+# Stage 1: Build
+FROM golang:1.23 AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git
-
+# Copy go mod files first for layer caching
 COPY api-gateway/go.mod api-gateway/go.sum ./
 RUN go mod download
 
+# Copy source code
 COPY api-gateway/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o api-gateway .
+# Build with optimizations
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.version=${VERSION:-dev}" \
+    -o /api-gateway .
 
-FROM alpine:latest
+# Stage 2: Runtime (Distroless - minimal attack surface)
+FROM gcr.io/distroless/static-debian12:nonroot
 
-RUN apk --no-cache add ca-certificates
+# Copy binary from builder
+COPY --from=builder /api-gateway /api-gateway
 
-WORKDIR /root/
-
-COPY --from=builder /app/api-gateway .
+# Run as non-root user
+USER nonroot:nonroot
 
 EXPOSE 8080
 
-CMD ["./api-gateway"]
+ENTRYPOINT ["/api-gateway"]

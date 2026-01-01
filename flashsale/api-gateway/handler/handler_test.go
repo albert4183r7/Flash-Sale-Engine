@@ -16,7 +16,7 @@ func init() {
 func TestPurchaseHandler_InvalidRequest(t *testing.T) {
 	t.Run("should return error for invalid JSON", func(t *testing.T) {
 		router := gin.New()
-		router.POST("/purchase", func(c *gin.Context) {
+		router.POST("/api/v1/users/:user_id/orders", func(c *gin.Context) {
 			// Simulate the actual handler behavior for invalid JSON
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
@@ -26,7 +26,7 @@ func TestPurchaseHandler_InvalidRequest(t *testing.T) {
 			})
 		})
 
-		req := httptest.NewRequest("POST", "/purchase", strings.NewReader("invalid json"))
+		req := httptest.NewRequest("POST", "/api/v1/users/550e8400-e29b-41d4-a716-446655440000/orders", strings.NewReader("invalid json"))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -46,7 +46,7 @@ func TestPurchaseHandler_InvalidRequest(t *testing.T) {
 func TestPurchaseHandler_Unauthorized(t *testing.T) {
 	t.Run("should return error when user_id not in context", func(t *testing.T) {
 		router := gin.New()
-		router.POST("/purchase", func(c *gin.Context) {
+		router.POST("/api/v1/users/:user_id/orders", func(c *gin.Context) {
 			_, exists := c.Get("user_id")
 			if !exists {
 				c.JSON(http.StatusUnauthorized, gin.H{
@@ -59,7 +59,7 @@ func TestPurchaseHandler_Unauthorized(t *testing.T) {
 			}
 		})
 
-		req := httptest.NewRequest("POST", "/purchase", strings.NewReader(`{"product_id": "test", "qty": 1}`))
+		req := httptest.NewRequest("POST", "/api/v1/users/550e8400-e29b-41d4-a716-446655440000/orders", strings.NewReader(`{"product_id": "test", "qty": 1}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -74,7 +74,7 @@ func TestPurchaseHandler_Unauthorized(t *testing.T) {
 func TestAuthHandler_InvalidRequest(t *testing.T) {
 	t.Run("should return error for missing email/password", func(t *testing.T) {
 		router := gin.New()
-		router.POST("/auth/login", func(c *gin.Context) {
+		router.POST("/api/v1/auth/login", func(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"data":    nil,
@@ -83,7 +83,7 @@ func TestAuthHandler_InvalidRequest(t *testing.T) {
 			})
 		})
 
-		req := httptest.NewRequest("POST", "/auth/login", strings.NewReader("{}"))
+		req := httptest.NewRequest("POST", "/api/v1/auth/login", strings.NewReader("{}"))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -94,3 +94,4 @@ func TestAuthHandler_InvalidRequest(t *testing.T) {
 		}
 	})
 }
+

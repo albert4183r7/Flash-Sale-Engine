@@ -9,24 +9,20 @@ import (
 	"github.com/flashsale/order-worker/client"
 	"github.com/flashsale/order-worker/config"
 	"github.com/flashsale/order-worker/consumer"
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	if err := godotenv.Load("../.env"); err != nil {
-		log.Println("No .env file found")
-	}
-
+	// Note: In production (GKE), env vars come from ConfigMap/Secrets
+	// godotenv is removed for cloud deployment
 	log.Println("Starting Order Worker...")
 	cfg := config.Load()
 
 	// Initialize HTTP clients for services
 	orderClient := client.NewOrderServiceClient(cfg.OrderServiceURL)
 	productClient := client.NewProductServiceClient(cfg.ProductServiceURL)
-	paymentClient := client.NewPaymentServiceClient(cfg.PaymentServiceURL)
 
 	// Create RabbitMQ consumer with HTTP clients
-	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderClient, productClient, paymentClient)
+	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderClient, productClient)
 	if err != nil {
 		log.Fatalf("Failed to create RabbitMQ consumer: %v", err)
 	}

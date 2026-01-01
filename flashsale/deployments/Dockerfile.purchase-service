@@ -1,24 +1,30 @@
-FROM golang:1.23-alpine AS builder
+# =============================================================================
+# Purchase Service - Multi-stage Distroless Dockerfile
+# HOT PATH - Critical for flash sales
+# =============================================================================
+
+# Stage 1: Build
+FROM golang:1.23 AS builder
 
 WORKDIR /app
-
-RUN apk add --no-cache git
 
 COPY purchase-service/go.mod purchase-service/go.sum ./
 RUN go mod download
 
 COPY purchase-service/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o purchase-service .
+# Build with optimizations
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.version=${VERSION:-dev}" \
+    -o /purchase-service .
 
-FROM alpine:latest
+# Stage 2: Runtime (Distroless)
+FROM gcr.io/distroless/static-debian12:nonroot
 
-RUN apk --no-cache add ca-certificates
+COPY --from=builder /purchase-service /purchase-service
 
-WORKDIR /root/
-
-COPY --from=builder /app/purchase-service .
+USER nonroot:nonroot
 
 EXPOSE 8081
 
-CMD ["./purchase-service"]
+ENTRYPOINT ["/purchase-service"]

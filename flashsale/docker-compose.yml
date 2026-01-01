@@ -1,4 +1,4 @@
-version: '3.8'
+# Flash Sale Engine - Docker Compose Configuration
 
 services:
   # ==================== INFRASTRUCTURE ====================
@@ -99,26 +99,6 @@ services:
     volumes:
       - order_db_data:/var/lib/postgresql/data
       - ./migrations/orders.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - flashsale-network
-
-  payment-db:
-    image: postgres:17-alpine
-    container_name: flashsale-payment-db
-    ports:
-      - "5436:5432"
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: flashsale_payments
-    volumes:
-      - payment_db_data:/var/lib/postgresql/data
-      - ./migrations/payments.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
@@ -228,8 +208,6 @@ services:
         condition: service_started
       product-service:
         condition: service_started
-      payment-service:
-        condition: service_started
     networks:
       - flashsale-network
     restart: unless-stopped
@@ -239,7 +217,6 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       ORDER_SERVICE_URL: http://order-service:8084
       PRODUCT_SERVICE_URL: http://product-service:8083
-      PAYMENT_SERVICE_URL: http://payment-service:8086
 
   api-gateway:
     build:
@@ -268,24 +245,6 @@ services:
       PRODUCT_SERVICE_URL: http://product-service:8083
       ORDER_SERVICE_URL: http://order-service:8084
       PURCHASE_SERVICE_URL: http://purchase-service:8081
-      PAYMENT_SERVICE_URL: http://payment-service:8086
-
-  payment-service:
-    build:
-      context: ./payment-service
-      dockerfile: Dockerfile
-    container_name: flashsale-payment-service
-    ports:
-      - "8086:8086"
-    depends_on:
-      payment-db:
-        condition: service_healthy
-    networks:
-      - flashsale-network
-    restart: unless-stopped
-    environment:
-      PORT: 8086
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payment-db:5432/flashsale_payments?sslmode=disable
 
 networks:
   flashsale-network:
@@ -297,4 +256,3 @@ volumes:
   user_db_data:
   product_db_data:
   order_db_data:
-  payment_db_data:
