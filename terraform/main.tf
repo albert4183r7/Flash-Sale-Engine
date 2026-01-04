@@ -209,6 +209,15 @@ resource "aws_security_group" "redis" {
     security_groups = [module.eks.cluster_security_group_id]
   }
 
+  # Allow Fargate pods (they use ENIs in VPC CIDR, not cluster SG)
+  ingress {
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = [module.vpc.vpc_cidr_block]
+    description = "Allow Redis access from VPC (Fargate pods)"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
