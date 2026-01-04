@@ -22,7 +22,7 @@ func main() {
 
 	r := router.Setup(cfg)
 
-	// Create HTTP server with production timeouts
+	// HTTP server with production timeouts
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      r,
@@ -31,7 +31,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
 	go func() {
 		log.Printf("API Gateway listening on port %s", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -39,19 +38,16 @@ func main() {
 		}
 	}()
 
-	// Wait for shutdown signal
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutdown signal received, draining connections...")
 
-	// Create deadline for graceful shutdown
-	// Cloud Run/GKE sends SIGTERM, then SIGKILL after termination grace period
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	// Shutdown gracefully - stops accepting new requests, waits for existing to complete
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}

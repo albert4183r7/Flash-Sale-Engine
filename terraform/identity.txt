@@ -1,0 +1,5 @@
+{
+    "UserId": "AIDAWXEPNMHFCZ4EFXEGO",
+    "Account": "462009754058",
+    "Arn": "arn:aws:iam::462009754058:user/flashsale-deployer"
+}

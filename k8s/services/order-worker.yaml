@@ -1,0 +1,108 @@
+# =============================================================================
+# Order Worker - Deployment (No Service - consumes from Pub/Sub)
+# Async order processing via Cloud Pub/Sub
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-worker
+  namespace: flashsale
+  labels:
+    app: order-worker
+    tier: worker
+    app.kubernetes.io/name: order-worker
+    app.kubernetes.io/part-of: flashsale-engine
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: order-worker
+  template:
+    metadata:
+      labels:
+        app: order-worker
+        tier: worker
+    spec:
+      serviceAccountName: flashsale-sa
+      
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: order-worker
+
+      containers:
+        - name: order-worker
+          image: 462009754058.dkr.ecr.ap-southeast-1.amazonaws.com/flashsale/order-worker:latest
+          imagePullPolicy: Always
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+
+          env:
+            # Pub/Sub configuration
+            # SQS configuration
+            - name: SQS_QUEUE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: SQS_QUEUE_URL
+            # Service URLs
+            - name: ORDER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: ORDER_SERVICE_URL
+            - name: PRODUCT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: PRODUCT_SERVICE_URL
+
+
+          # Note: Workers don't need health probes - they pull from SQS
+          # Distroless images have no shell, so exec probes won't work
+
+      terminationGracePeriodSeconds: 60  # Longer for message processing
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-worker-hpa
+  namespace: flashsale
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait for messages to drain

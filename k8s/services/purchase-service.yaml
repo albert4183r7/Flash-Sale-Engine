@@ -1,0 +1,197 @@
+# =============================================================================
+# Purchase Service - Deployment & Service
+# 🔥 HOT PATH - Critical for flash sales, aggressive scaling
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: purchase-service
+  namespace: flashsale
+  labels:
+    app: purchase-service
+    tier: critical
+    app.kubernetes.io/name: purchase-service
+    app.kubernetes.io/part-of: flashsale-engine
+spec:
+  replicas: 3  # Always keep 3 warm replicas for flash sales
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0  # Zero downtime
+  selector:
+    matchLabels:
+      app: purchase-service
+  template:
+    metadata:
+      labels:
+        app: purchase-service
+        tier: critical
+    spec:
+      serviceAccountName: flashsale-sa
+      
+      # High priority for hot path
+      priorityClassName: system-cluster-critical
+      
+      # Spread across all availability zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: purchase-service
+
+      containers:
+        - name: purchase-service
+          image: 462009754058.dkr.ecr.ap-southeast-1.amazonaws.com/flashsale/purchase-service:latest
+          imagePullPolicy: Always
+          
+          ports:
+            - containerPort: 8081
+              name: http
+              protocol: TCP
+
+          # Higher resources for hot path
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "512Mi"
+
+          env:
+            - name: PURCHASE_SERVICE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: PURCHASE_SERVICE_PORT
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: REDIS_ADDR
+            - name: PRODUCT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: PRODUCT_SERVICE_URL
+            # Pub/Sub configuration
+            # SQS configuration
+            - name: SQS_QUEUE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: SQS_QUEUE_URL
+            - name: IDEMPOTENCY_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: flashsale-config
+                  key: IDEMPOTENCY_TTL
+
+          # Fast startup probe
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+
+          # Aggressive readiness probe for hot path
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 3
+            successThreshold: 1
+            failureThreshold: 2
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+
+      terminationGracePeriodSeconds: 45
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: purchase-service
+  namespace: flashsale
+  labels:
+    app: purchase-service
+    app.kubernetes.io/name: purchase-service
+    app.kubernetes.io/part-of: flashsale-engine
+spec:
+  type: ClusterIP  # Internal only
+  selector:
+    app: purchase-service
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: purchase-service-hpa
+  namespace: flashsale
+  labels:
+    tier: critical
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: purchase-service
+  minReplicas: 3  # Always 3 for flash sales
+  maxReplicas: 20 # Burst capacity
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50  # Scale early at 50%
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Scale up immediately
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5 min before scale down
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+
+---
+# Pod Disruption Budget - ensure availability during updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: purchase-service-pdb
+  namespace: flashsale
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: purchase-service

@@ -22,12 +22,15 @@ func NewOrderClient(baseURL string) *OrderClient {
 }
 
 type Order struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	ProductID uuid.UUID `json:"product_id"`
-	Qty       int       `json:"qty"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           uuid.UUID `json:"id"`
+	UserID       uuid.UUID `json:"user_id"`
+	ProductID    uuid.UUID `json:"product_id"`
+	ProductName  string    `json:"product_name"`
+	ProductPrice int       `json:"product_price"`
+	Qty          int       `json:"qty"`
+	Notes        string    `json:"notes,omitempty"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type OrdersResponse struct {

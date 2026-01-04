@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -12,11 +13,12 @@ import (
 )
 
 func main() {
-	// 1. Load environment
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load()
+	// Only load .env.seed if it exists (for custom config)
+	// Otherwise use localhost defaults for host machine seeding
+	_ = godotenv.Load(".env.seed")
 
 	fmt.Println("=== Flash Sale Database Seeder (Microservices) ===")
+	fmt.Println("Connecting to databases on localhost (Docker exposed ports)...")
 
 	// 2. Seed Users Database
 	seedUsers()
@@ -24,7 +26,10 @@ func main() {
 	// 3. Seed Products Database
 	seedProducts()
 
-	fmt.Println("\n✅ All databases seeded successfully!")
+	// 4. Warm up Redis cache with stock data
+	warmupCache()
+
+	fmt.Println("\n✅ All databases seeded and cache warmed up!")
 }
 
 func seedUsers() {
@@ -146,5 +151,24 @@ func seedProducts() {
 		} else {
 			fmt.Printf("   ✓ Seeded Product: %s (Stock: %d, Price: $%d)\n", p.Name, p.Stock, p.Price)
 		}
+	}
+}
+
+func warmupCache() {
+	fmt.Println("\n🔥 Warming up Redis cache...")
+
+	// Call product-service warmup endpoint
+	resp, err := http.Post("http://localhost:8083/internal/stock/warmup", "application/json", nil)
+	if err != nil {
+		log.Printf("   ⚠️ Warning: Could not warm up cache: %v", err)
+		fmt.Println("   Run manually: curl -X POST http://localhost:8083/internal/stock/warmup")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("   ✓ Redis cache warmed up successfully!")
+	} else {
+		log.Printf("   ⚠️ Warning: Warmup returned status %d", resp.StatusCode)
 	}
 }

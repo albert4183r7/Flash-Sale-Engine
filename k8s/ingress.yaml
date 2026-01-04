@@ -1,0 +1,64 @@
+# =============================================================================
+# ALB Ingress - Routes external traffic to services via Application Load Balancer
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flashsale-ingress
+  namespace: flashsale
+  annotations:
+    # Use ALB (Application Load Balancer)
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    
+    # Health check configuration
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    
+    # Listen on HTTP (port 80)
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    
+    # Tags for the ALB
+    alb.ingress.kubernetes.io/tags: Environment=dev,Project=flashsale
+    
+    # Subnets (optional - auto-discovers if not set)
+    # alb.ingress.kubernetes.io/subnets: subnet-xxx,subnet-yyy
+    
+  labels:
+    app: flashsale
+    app.kubernetes.io/name: flashsale-ingress
+    app.kubernetes.io/part-of: flashsale-engine
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # All traffic goes to API Gateway
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 80
+
+---
+# =============================================================================
+# Service Account for AWS Load Balancer Controller
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  annotations:
+    # This ARN will be set after terraform apply
+    # Replace with your actual role ARN from terraform output
+    eks.amazonaws.com/role-arn: "arn:aws:iam::462009754058:role/flashsale-aws-load-balancer-controller"
+  labels:
+    app.kubernetes.io/name: aws-load-balancer-controller
+    app.kubernetes.io/component: controller

@@ -15,14 +15,9 @@ import (
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/flashsale/purchase-service/service"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	if err := godotenv.Load("../.env"); err != nil {
-		log.Println("No .env file, using system env")
-	}
-
 	cfg := config.Load()
 	log.Println("Starting Purchase Service...")
 
@@ -30,23 +25,38 @@ func main() {
 	redisClient := redis.NewClient(cfg.RedisAddr, cfg.RedisPassword)
 	defer redisClient.Close()
 
-	// 2. Setup RabbitMQ with retry
-	var rabbitPublisher *publisher.RabbitMQ
+	// 2. Setup SQS Publisher
+	var msgPublisher service.MessagePublisher
 	var err error
-	for i := 0; i < 5; i++ {
-		rabbitPublisher, err = publisher.NewRabbitMQ(cfg.RabbitMQURL)
-		if err == nil {
-			log.Println("Connected to RabbitMQ successfully")
-			defer rabbitPublisher.Close()
-			break
-		}
-		log.Printf("Failed to connect to RabbitMQ (attempt %d/5): %v", i+1, err)
-		time.Sleep(2 * time.Second)
-	}
 
-	if err != nil {
-		log.Printf("Error connecting to RabbitMQ: %v", err)
+	sqsQueueURL := os.Getenv("SQS_QUEUE_URL")
+	if sqsQueueURL != "" {
+		// Use SQS in AWS environment
+		msgPublisher, err = publisher.NewSQSPublisher(sqsQueueURL)
+		if err != nil {
+			log.Fatalf("Failed to create SQS publisher: %v", err)
+		}
+		log.Println("Using Amazon SQS for messaging")
+	} else {
+		// Fallback to RabbitMQ for local development
+		for i := 0; i < 5; i++ {
+			msgPublisher, err = publisher.NewRabbitMQ(cfg.RabbitMQURL)
+			if err == nil {
+				log.Println("Connected to RabbitMQ (local development)")
+				break
+			}
+			log.Printf("Failed to connect to RabbitMQ (attempt %d/5): %v", i+1, err)
+			time.Sleep(2 * time.Second)
+		}
+		if err != nil {
+			log.Printf("Warning: Message queue not available: %v", err)
+		}
 	}
+	defer func() {
+		if msgPublisher != nil {
+			msgPublisher.Close()
+		}
+	}()
 
 	// 3. Setup Product Client for product name lookups
 	productServiceURL := os.Getenv("PRODUCT_SERVICE_URL")
@@ -69,7 +79,7 @@ func main() {
 		}
 	}
 
-	purchaseService := service.NewPurchaseService(redisClient, rabbitPublisher, productClient, cfg.IdempotencyTTL)
+	purchaseService := service.NewPurchaseService(redisClient, msgPublisher, productClient, cfg.IdempotencyTTL)
 
 	// 5. Setup Router
 	gin.SetMode(gin.ReleaseMode)
@@ -78,6 +88,11 @@ func main() {
 
 	purchaseHandler := handler.NewPurchaseHandler(purchaseService)
 	stockHandler := handler.NewStockHandler(redisClient)
+
+	// Health check for Kubernetes probes
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "purchase-service"})
+	})
 
 	r.POST("/purchase", purchaseHandler.Purchase)
 	r.GET("/stock/:id", stockHandler.GetStock)

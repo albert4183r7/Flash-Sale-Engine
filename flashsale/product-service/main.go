@@ -26,14 +26,12 @@ func main() {
 	log.Println("Starting Product Service...")
 	cfg := config.Load()
 
-	// 1. Connect to PostgreSQL (Products DB)
 	db, err := sql.Open("postgres", cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
-	// Retry loop for DB connection
 	for i := 0; i < 5; i++ {
 		if err := db.Ping(); err == nil {
 			log.Println("Connected to PostgreSQL successfully")
@@ -43,7 +41,6 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 2. Connect to Redis
 	stockCache := cache.NewStockCache(cfg.RedisAddr, cfg.RedisPassword)
 	defer stockCache.Close()
 
@@ -54,12 +51,11 @@ func main() {
 		log.Println("Connected to Redis successfully")
 	}
 
-	// 3. Initialize Repository and Handlers
 	productRepo := repository.NewProductRepository(db)
 	productHandler := handler.NewProductHandler(productRepo, stockCache)
 	healthHandler := handler.NewHealthHandler()
 
-	// 4. Warmup: Load stock from DB to Redis
+	// Warmup cache from database
 	products, err := productRepo.FindAll()
 	if err != nil {
 		log.Printf("Warning: Failed to fetch products for warmup: %v", err)
@@ -71,20 +67,16 @@ func main() {
 		}
 	}
 
-	// 5. Setup Router
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	// Health check
 	r.GET("/health", healthHandler.Health)
 
-	// Public product routes
 	r.GET("/products", productHandler.ListProducts)
 	r.GET("/products/:id", productHandler.GetProduct)
 	r.GET("/products/:id/stock", productHandler.GetStock)
 
-	// Internal routes (for other services)
 	internal := r.Group("/internal")
 	{
 		internal.POST("/stock/decrement", productHandler.DecrementStock)
@@ -93,7 +85,6 @@ func main() {
 		internal.POST("/stock/warmup", productHandler.WarmupCache)
 	}
 
-	// 6. Start server
 	go func() {
 		log.Printf("Product Service listening on port %s", cfg.Port)
 		if err := r.Run(":" + cfg.Port); err != nil {
@@ -101,7 +92,6 @@ func main() {
 		}
 	}()
 
-	// 7. Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

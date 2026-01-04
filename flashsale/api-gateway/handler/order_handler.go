@@ -117,9 +117,15 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"order_id": order.ID,
-			"user_id":  userID,
-			"status":   order.Status,
+			"order_id":      order.ID,
+			"user_id":       userID,
+			"product_id":    order.ProductID,
+			"product_name":  order.ProductName,
+			"product_price": order.ProductPrice,
+			"qty":           order.Qty,
+			"notes":         order.Notes,
+			"status":        order.Status,
+			"created_at":    order.CreatedAt,
 		},
 		"message": "Order retrieved successfully.",
 	})

@@ -22,21 +22,27 @@ type PurchaseResult struct {
 	ErrorCode   string // Technical error code for debugging
 }
 
+// MessagePublisher interface for publishing order events
+type MessagePublisher interface {
+	PublishOrderCreated(event publisher.OrderEvent) error
+	Close()
+}
+
 // PurchaseService handles purchase logic
 type PurchaseService struct {
-	redisClient     *redis.Client
-	rabbitPublisher *publisher.RabbitMQ
-	productClient   *client.ProductClient
-	idempotencyTTL  int
+	redisClient    *redis.Client
+	msgPublisher   MessagePublisher
+	productClient  *client.ProductClient
+	idempotencyTTL int
 }
 
 // NewPurchaseService creates a new PurchaseService
-func NewPurchaseService(redisClient *redis.Client, rabbitPublisher *publisher.RabbitMQ, productClient *client.ProductClient, idempotencyTTL int) *PurchaseService {
+func NewPurchaseService(redisClient *redis.Client, msgPublisher MessagePublisher, productClient *client.ProductClient, idempotencyTTL int) *PurchaseService {
 	return &PurchaseService{
-		redisClient:     redisClient,
-		rabbitPublisher: rabbitPublisher,
-		productClient:   productClient,
-		idempotencyTTL:  idempotencyTTL,
+		redisClient:    redisClient,
+		msgPublisher:   msgPublisher,
+		productClient:  productClient,
+		idempotencyTTL: idempotencyTTL,
 	}
 }
 
@@ -112,7 +118,7 @@ func (s *PurchaseService) ProcessPurchase(ctx context.Context, userID, productID
 		Timestamp: time.Now(),
 	}
 
-	if err := s.rabbitPublisher.PublishOrderCreated(event); err != nil {
+	if err := s.msgPublisher.PublishOrderCreated(event); err != nil {
 		return PurchaseResult{
 			Success:   false,
 			ProductID: productID,

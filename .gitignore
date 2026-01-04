@@ -1,2 +1,65 @@
-node_modules/
+# =============================================================================
+# Flash Sale Engine - Git Ignore Configuration
+# =============================================================================
+
+# Environment & Secrets
 .env
+.env.local
+.env.*.local
+!.env.example
+terraform.tfvars
+*.pem
+*.key
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfstate.backup
+
+# IDE & Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.html
+vendor/
+bin/
+build/
+
+# Node (if any frontend)
+node_modules/
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+.tmp/
+
+# Kubernetes secrets (local)
+k8s/secrets.yaml
+
+# Local configs
+*.local

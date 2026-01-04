@@ -1,0 +1,10 @@
+# =============================================================================
+# Flash Sale Engine - Kubernetes Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flashsale
+  labels:
+    app.kubernetes.io/name: flashsale
+    app.kubernetes.io/part-of: flashsale-engine

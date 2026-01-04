@@ -1,0 +1,15 @@
+# AWS region (Singapore - closest to Indonesia)
+region = "ap-southeast-1"
+
+# Environment
+environment = "production"
+
+# Database (Free tier eligible)
+db_instance_class = "db.t3.micro"
+
+# Redis (Free tier eligible)
+redis_node_type = "cache.t3.micro"
+
+# IMPORTANT: Replace these with your actual secrets before running terraform apply
+db_password = "CHANGE_ME_STRONG_PASSWORD_123!"
+jwt_secret  = "CHANGE_ME_JWT_SECRET_KEY_123!"

@@ -1,0 +1,43 @@
+# =============================================================================
+# Flash Sale Engine - ConfigMap (Non-sensitive configuration)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flashsale-config
+  namespace: flashsale
+  labels:
+    app.kubernetes.io/part-of: flashsale-engine
+data:
+  # Service ports
+  API_GATEWAY_PORT: "8080"
+  USER_SERVICE_PORT: "8082"
+  PRODUCT_SERVICE_PORT: "8083"
+  ORDER_SERVICE_PORT: "8084"
+  PURCHASE_SERVICE_PORT: "8081"
+
+  # Internal service URLs (Kubernetes DNS)
+  USER_SERVICE_URL: "http://user-service.flashsale.svc.cluster.local:8082"
+  PRODUCT_SERVICE_URL: "http://product-service.flashsale.svc.cluster.local:8083"
+  ORDER_SERVICE_URL: "http://order-service.flashsale.svc.cluster.local:8084"
+  PURCHASE_SERVICE_URL: "http://purchase-service.flashsale.svc.cluster.local:8081"
+
+  # Redis (ElastiCache) - UPDATE with terraform output (redis_endpoint)
+  REDIS_ADDR: "flashsale-redis.wnjdw7.ng.0001.apse1.cache.amazonaws.com:6379"
+  
+  # AWS SQS Queue - UPDATE with terraform output (sqs_order_queue_url)
+  SQS_QUEUE_URL: "https://sqs.ap-southeast-1.amazonaws.com/462009754058/flashsale-order-events"
+
+  # Database host (RDS private endpoint) - UPDATE with terraform output
+  DB_HOST: "flashsale-db.cd2y868ki0le.ap-southeast-1.rds.amazonaws.com"
+  DB_PORT: "5432"
+
+  # Database names (all in same RDS instance)
+  USER_DB_NAME: "flashsale"
+  PRODUCT_DB_NAME: "flashsale"
+  ORDER_DB_NAME: "flashsale"
+
+  # Application settings
+  GIN_MODE: "release"
+  IDEMPOTENCY_TTL: "120"
+  TOKEN_EXPIRY: "86400"

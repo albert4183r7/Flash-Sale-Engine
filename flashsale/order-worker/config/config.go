@@ -19,7 +19,7 @@ func Load() *Config {
 }
 
 func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != ""; {
+	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue

@@ -26,7 +26,6 @@ func main() {
 	log.Println("Starting User Service...")
 	cfg := config.Load()
 
-	// 1. Connect to PostgreSQL (Users DB)
 	db, err := sql.Open("postgres", cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -43,7 +42,6 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	// 2. Connect to Redis
 	userCache := cache.NewUserCache(cfg.RedisAddr, cfg.RedisPassword)
 	defer userCache.Close()
 
@@ -53,12 +51,10 @@ func main() {
 		log.Println("Connected to Redis successfully")
 	}
 
-	// 3. Initialize Repository and Handlers
 	userRepo := repository.NewUserRepository(db)
 	authHandler := handler.NewAuthHandler(userRepo, userCache, cfg.JWTSecret, cfg.TokenExpiry)
 	healthHandler := handler.NewHealthHandler()
 
-	// 4. Setup Router
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -77,7 +73,6 @@ func main() {
 		internal.POST("/validate-token", authHandler.ValidateToken)
 	}
 
-	// 5. Start server
 	go func() {
 		log.Printf("User Service listening on port %s", cfg.Port)
 		if err := r.Run(":" + cfg.Port); err != nil {
@@ -85,7 +80,6 @@ func main() {
 		}
 	}()
 
-	// 6. Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
