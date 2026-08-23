@@ -1,51 +1,71 @@
 package handler
 
 import (
-	"context"
+	"errors"
 	"net/http"
 
+	"github.com/flashsale/common/response"
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
+// StockHandler exposes the in-memory stock counters.
 type StockHandler struct {
-	redisClient *redis.Client
+	stock *redis.Client
 }
 
-func NewStockHandler(redisClient *redis.Client) *StockHandler {
-	return &StockHandler{redisClient: redisClient}
+// NewStockHandler creates a StockHandler.
+func NewStockHandler(stock *redis.Client) *StockHandler {
+	return &StockHandler{stock: stock}
 }
 
+// GetStock handles GET /stock/:id.
 func (h *StockHandler) GetStock(c *gin.Context) {
-	productIDStr := c.Param("id")
-	
-	productID, err := uuid.Parse(productIDStr)
+	productID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Product UUID"})
+		response.Error(c, http.StatusBadRequest, "Invalid request", "product id must be a UUID")
 		return
 	}
 
-	stock, _ := h.redisClient.GetStock(context.Background(), productID)
-	c.JSON(http.StatusOK, gin.H{"product_id": productID, "stock": stock})
+	remaining, err := h.stock.GetStock(c.Request.Context(), productID)
+	if errors.Is(err, redis.ErrProductUnknown) {
+		response.Error(c, http.StatusNotFound, "Product not found",
+			"No stock counter exists for this product")
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "Failed to read stock",
+			"Stock storage is unavailable")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Stock retrieved", gin.H{
+		"product_id": productID,
+		"stock":      remaining,
+	})
 }
 
-// RestoreStock handles atomic increment for cancellations
+// RestoreStockRequest returns previously reserved units to the counter.
+type RestoreStockRequest struct {
+	ProductID uuid.UUID `json:"product_id" binding:"required"`
+	Qty       int       `json:"qty" binding:"required,gt=0"`
+}
+
+// RestoreStock handles POST /internal/stock/restore, called by the API gateway
+// when an order is cancelled.
 func (h *StockHandler) RestoreStock(c *gin.Context) {
-	var req struct {
-		ProductID uuid.UUID `json:"product_id"`
-		Qty       int 		`json:"qty"`
-	}
+	var req RestoreStockRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.Error(c, http.StatusBadRequest, "Invalid request", err.Error())
 		return
 	}
 
-	err := h.redisClient.IncrementStock(context.Background(), req.ProductID, req.Qty)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Redis error"})
+	if err := h.stock.IncrementStock(c.Request.Context(), req.ProductID, req.Qty); err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "Failed to restore stock",
+			"Stock storage is unavailable")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	response.Success(c, http.StatusOK, "Stock restored", nil)
 }

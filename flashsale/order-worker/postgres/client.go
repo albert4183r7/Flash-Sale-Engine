@@ -1,79 +1,53 @@
+// Package postgres manages the order worker's PostgreSQL connection.
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // database/sql driver
 )
 
-// Client wraps the PostgreSQL connection
-type Client struct {
-	db *sql.DB
-}
+const (
+	connectAttempts = 5
+	connectBackoff  = 2 * time.Second
+)
 
-// NewClient creates a new PostgreSQL client
-func NewClient(connectionURL string) (*Client, error) {
-	var db *sql.DB
-	var err error
-
-	for i := 0; i < 5; i++ {
-		db, err = sql.Open("postgres", connectionURL)
-		if err == nil {
-			err = db.Ping()
-			if err == nil {
-				break
-			}
-		}
-		log.Printf("Failed to connect to PostgreSQL (attempt %d/5): %v", i+1, err)
-		time.Sleep(2 * time.Second)
-	}
-
+// Connect opens a PostgreSQL connection pool and waits for the server to become
+// reachable, retrying to tolerate the database still starting up alongside the
+// worker. The pool is opened once and only the reachability check is retried.
+func Connect(ctx context.Context, url string) (*sql.DB, error) {
+	db, err := sql.Open("postgres", url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to PostgreSQL after 5 attempts: %w", err)
+		return nil, fmt.Errorf("open postgres connection: %w", err)
 	}
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(time.Minute)
 
-	log.Println("Connected to PostgreSQL successfully")
-	return &Client{db: db}, nil
-}
+	for attempt := 1; attempt <= connectAttempts; attempt++ {
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = db.PingContext(pingCtx)
+		cancel()
+		if err == nil {
+			log.Println("connected to PostgreSQL")
+			return db, nil
+		}
+		log.Printf("postgres not ready (attempt %d/%d): %v", attempt, connectAttempts, err)
 
-// Close closes the database connection
-func (c *Client) Close() error {
-	return c.db.Close()
-}
-
-// DB returns the underlying database connection
-func (c *Client) DB() *sql.DB {
-	return c.db
-}
-
-// InitializeSchema creates the orders table if it doesn't exist
-func (c *Client) InitializeSchema() error {
-	schema := `
-		CREATE TABLE IF NOT EXISTS orders (
-		id UUID PRIMARY KEY,
-		user_id UUID NOT NULL REFERENCES users(id),   
-		product_id UUID NOT NULL REFERENCES products(id),
-		qty INT NOT NULL,
-		status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-		created_at TIMESTAMP NOT NULL DEFAULT NOW()
-	);
-
-		CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-		CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-	`
-
-	_, err := c.db.Exec(schema)
-	if err != nil {
-		return fmt.Errorf("failed to initialize schema: %w", err)
+		select {
+		case <-ctx.Done():
+			_ = db.Close()
+			return nil, ctx.Err()
+		case <-time.After(connectBackoff):
+		}
 	}
 
-	log.Println("Database schema initialized successfully")
-	return nil
+	_ = db.Close()
+	return nil, fmt.Errorf("connect to postgres after %d attempts: %w", connectAttempts, err)
 }

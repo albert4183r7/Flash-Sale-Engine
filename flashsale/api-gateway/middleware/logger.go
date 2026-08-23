@@ -7,26 +7,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Logger is a middleware that logs request information
+// Logger records one line per request. It logs the matched route rather than
+// the raw path so that identifiers in the URL do not end up in the logs, and it
+// never logs headers or bodies, which carry credentials.
 func Logger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		path := c.Request.URL.Path
 		method := c.Request.Method
 
 		c.Next()
 
-		latency := time.Since(start)
-		statusCode := c.Writer.Status()
-		clientIP := c.ClientIP()
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
 
-		log.Printf("[%s] %s %s %d %v %s",
-			time.Now().Format("2006-01-02 15:04:05"),
-			method,
-			path,
-			statusCode,
-			latency,
-			clientIP,
-		)
+		log.Printf("%s %s %d %s %s",
+			method, route, c.Writer.Status(), time.Since(start), c.ClientIP())
 	}
 }

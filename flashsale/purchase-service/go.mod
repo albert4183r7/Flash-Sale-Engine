@@ -3,8 +3,9 @@ module github.com/flashsale/purchase-service
 go 1.23
 
 require (
+	github.com/flashsale/common v0.0.0
 	github.com/gin-gonic/gin v1.9.1
-	github.com/google/uuid v1.5.0
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.10.9
 	github.com/redis/go-redis/v9 v9.3.1
@@ -39,3 +40,5 @@ require (
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/flashsale/common => ../common

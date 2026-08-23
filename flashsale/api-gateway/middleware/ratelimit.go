@@ -2,93 +2,107 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/flashsale/common/response"
 	"github.com/gin-gonic/gin"
 )
 
-// RateLimiter implements a simple in-memory rate limiter
+// RateLimiter caps how many requests a single client address may make in a
+// sliding window. It is in-process, so each gateway instance enforces its own
+// limit; that is enough to blunt a single abusive client during a sale.
 type RateLimiter struct {
+	mu       sync.Mutex
 	requests map[string][]time.Time
-	mu       sync.RWMutex
 	limit    int
 	window   time.Duration
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
-// NewRateLimiter creates a new rate limiter
-func NewRateLimiter(limit int, windowSeconds int) *RateLimiter {
+// NewRateLimiter creates a limiter allowing limit requests per window and
+// starts the goroutine that evicts idle clients. Call Stop to release it.
+func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		requests: make(map[string][]time.Time),
 		limit:    limit,
-		window:   time.Duration(windowSeconds) * time.Second,
+		window:   window,
+		stop:     make(chan struct{}),
 	}
-
-	go rl.cleanup()
-
+	go rl.evictIdle()
 	return rl
 }
 
-// cleanup periodically removes old entries
-func (rl *RateLimiter) cleanup() {
-	ticker := time.NewTicker(time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, times := range rl.requests {
-			var valid []time.Time
-			for _, t := range times {
-				if now.Sub(t) < rl.window {
-					valid = append(valid, t)
+// Stop ends the eviction goroutine. Without it the limiter's ticker would
+// outlive the server it was created for.
+func (rl *RateLimiter) Stop() {
+	rl.stopOnce.Do(func() { close(rl.stop) })
+}
+
+// evictIdle periodically drops clients with no recent requests, so the map does
+// not grow without bound as new addresses appear.
+func (rl *RateLimiter) evictIdle() {
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case now := <-ticker.C:
+			rl.mu.Lock()
+			for client, seen := range rl.requests {
+				if kept := within(seen, now.Add(-rl.window)); len(kept) == 0 {
+					delete(rl.requests, client)
+				} else {
+					rl.requests[client] = kept
 				}
 			}
-			if len(valid) == 0 {
-				delete(rl.requests, ip)
-			} else {
-				rl.requests[ip] = valid
-			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
-// isAllowed checks if a request is allowed
-func (rl *RateLimiter) isAllowed(ip string) bool {
+// allow records a request and reports whether it is within the limit.
+func (rl *RateLimiter) allow(client string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	windowStart := now.Add(-rl.window)
-
-	var validRequests []time.Time
-	for _, t := range rl.requests[ip] {
-		if t.After(windowStart) {
-			validRequests = append(validRequests, t)
-		}
-	}
-
-	if len(validRequests) >= rl.limit {
+	recent := within(rl.requests[client], now.Add(-rl.window))
+	if len(recent) >= rl.limit {
+		rl.requests[client] = recent
 		return false
 	}
 
-	rl.requests[ip] = append(validRequests, now)
+	rl.requests[client] = append(recent, now)
 	return true
 }
 
-// RateLimit returns the rate limiting middleware
-func (rl *RateLimiter) RateLimit() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
+// within returns the timestamps at or after cutoff, reusing the backing array.
+func within(times []time.Time, cutoff time.Time) []time.Time {
+	kept := times[:0]
+	for _, t := range times {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
 
-		if !rl.isAllowed(ip) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"success": false,
-				"message": "Rate limit exceeded",
-				"error":   "Too many requests. Please try again later.",
-			})
+// RateLimit returns the rate limiting middleware.
+func (rl *RateLimiter) RateLimit() gin.HandlerFunc {
+	retryAfter := strconv.Itoa(int(rl.window.Seconds()))
+
+	return func(c *gin.Context) {
+		if !rl.allow(c.ClientIP()) {
+			c.Header("Retry-After", retryAfter)
+			response.Abort(c, http.StatusTooManyRequests, "Rate limit exceeded",
+				"Too many requests. Please try again later.")
 			return
 		}
-
 		c.Next()
 	}
 }

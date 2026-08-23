@@ -1,2 +1,52 @@
+# Compiled binaries and build output
+bin/
+build/
+
+# "go build" with no -o drops the binary in its module directory, named after
+# the module.
+/flashsale/api-gateway/api-gateway
+/flashsale/purchase-service/purchase-service
+/flashsale/order-worker/order-worker
+/flashsale/scripts/scripts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage output
+*.test
+*.out
+coverage.html
+
+# Go workspace files (each module is built on its own; common is wired in
+# through a replace directive)
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
 node_modules/
+
+# Environment files: never commit real configuration or secrets.
+# .env.example is the committed template.
 .env
+.env.local
+.env.*.local
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
