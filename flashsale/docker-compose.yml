@@ -1,4 +1,8 @@
-version: '3.8'
+# Full local stack: infrastructure plus the three Go services.
+#
+# Configuration comes from .env (copy it from .env.example first). Each service
+# also receives an `environment:` block that overrides the host-oriented values
+# in .env with the hostnames that apply inside the Compose network.
 
 services:
   redis:
@@ -22,8 +26,6 @@ services:
       retries: 5
     networks:
       - flashsale-network
-    env_file:
-      - .env
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -32,8 +34,8 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -43,11 +45,9 @@ services:
       retries: 5
     networks:
       - flashsale-network
-    env_file:
-      - .env
 
   postgres:
-    image: postgres:17-alpine 
+    image: postgres:17-alpine
     container_name: flashsale-postgres
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -57,16 +57,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-flashsale}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Runs only when the data directory is empty. Re-apply by hand, or drop
+      # the volume, after changing the schema.
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-flashsale}"]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
       - flashsale-network
-    env_file:
-      - .env
 
   api-gateway:
     build:
@@ -77,10 +77,10 @@ services:
       - "${API_GATEWAY_PORT:-8080}:8080"
     depends_on:
       purchase-service:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
-      redis:                 
+      redis:
         condition: service_healthy
     networks:
       - flashsale-network
@@ -88,18 +88,27 @@ services:
     env_file:
       - .env
     environment:
-      PORT: 8080
-      POSTGRES_HOST: postgres
+      API_GATEWAY_PORT: 8080
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
+      REDIS_ADDR: redis:6379
       PURCHASE_SERVICE_URL: http://purchase-service:8081
-      REDIS_ADDR: redis:6379 
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   purchase-service:
     build:
       context: .
       dockerfile: deployments/Dockerfile.purchase-service
     container_name: flashsale-purchase-service
-    ports:
-      - "${PURCHASE_SERVICE_PORT:-8081}:8081"
+    # Deliberately not published to the host: this service trusts the user ID in
+    # its request bodies and is reachable only by the gateway over the Compose
+    # network. Its routes additionally require INTERNAL_API_TOKEN.
+    expose:
+      - "8081"
     depends_on:
       redis:
         condition: service_healthy
@@ -113,9 +122,16 @@ services:
     env_file:
       - .env
     environment:
-      PORT: 8081
-      POSTGRES_HOST: postgres
+      PURCHASE_SERVICE_PORT: 8081
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
       REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   order-worker:
     build:
@@ -133,7 +149,8 @@ services:
     env_file:
       - .env
     environment:
-      POSTGRES_HOST: postgres
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
 
 networks:
   flashsale-network:

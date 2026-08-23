@@ -1,0 +1,38 @@
+# golangci-lint v2 configuration.
+#
+# The enabled set is deliberately small: linters that catch real defects
+# (unchecked errors, resource leaks, shadowed context) rather than stylistic
+# preferences. Run with:  golangci-lint run ./...   in each module directory.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # HTTP response bodies must be closed
+    - errorlint      # use errors.Is/As instead of comparing errors directly
+    - rowserrcheck   # sql.Rows.Err must be checked after iterating
+    - sqlclosecheck  # sql.Rows and sql.Stmt must be closed
+    - noctx          # HTTP requests should carry a context
+    - misspell
+    - revive
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true  # covered by review; not every symbol needs a comment
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test helpers legitimately ignore errors while cleaning up fixtures.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

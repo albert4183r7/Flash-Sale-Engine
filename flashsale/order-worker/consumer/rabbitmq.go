@@ -1,185 +1,226 @@
+// Package consumer receives order events from RabbitMQ and hands them to the
+// order store for persistence.
 package consumer
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/flashsale/common/models"
 	"github.com/flashsale/order-worker/repository"
-	"github.com/google/uuid"
 	"github.com/streadway/amqp"
 )
 
-// ... existing structs ...
 const (
 	exchangeName = "flashsale"
 	queueName    = "orders.queue"
 	routingKey   = "order.created"
+
+	connectAttempts = 5
+	connectBackoff  = 2 * time.Second
+
+	// retryDelay throttles redelivery after a transient failure. Without it a
+	// message that keeps failing is requeued in a tight loop that saturates the
+	// worker, the broker and the database.
+	retryDelay = 2 * time.Second
 )
 
-type OrderEvent struct {
-	OrderID   uuid.UUID `json:"order_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	ProductID uuid.UUID `json:"product_id"`
-	Qty       int       `json:"qty"`
-	Timestamp time.Time `json:"timestamp"`
+// ErrConnectionClosed reports that the broker closed the delivery stream. The
+// worker exits on this so its supervisor can restart it with a fresh
+// connection, rather than lingering as a process that consumes nothing.
+var ErrConnectionClosed = errors.New("rabbitmq delivery channel closed")
+
+// OrderStore persists an order event. It is an interface so the consumer's
+// message handling can be tested without a database.
+type OrderStore interface {
+	Persist(ctx context.Context, event models.OrderEvent) (models.OrderStatus, error)
 }
 
-type RabbitMQConsumer struct {
-	conn        *amqp.Connection
-	channel     *amqp.Channel
-	orderRepo   *repository.OrderRepository
+// Consumer reads order events from RabbitMQ.
+type Consumer struct {
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	store     OrderStore
+	dbTimeout time.Duration
 }
 
-// NewRabbitMQConsumer creates a new RabbitMQ consumer
-func NewRabbitMQConsumer(url string, orderRepo *repository.OrderRepository) (*RabbitMQConsumer, error) {
-	var conn *amqp.Connection
-	var err error
-
-	for i := 0; i < 5; i++ {
-		conn, err = amqp.Dial(url)
-		if err == nil {
-			break
-		}
-		log.Printf("Failed to connect to RabbitMQ (attempt %d/5): %v", i+1, err)
-		time.Sleep(2 * time.Second)
-	}
-
+// New dials RabbitMQ, declares the topology and returns a ready consumer.
+func New(url string, store OrderStore, dbTimeout time.Duration) (*Consumer, error) {
+	conn, err := dial(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ after 5 attempts: %w", err)
+		return nil, err
 	}
 
 	channel, err := conn.Channel()
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to open channel: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("open channel: %w", err)
 	}
 
-	err = channel.ExchangeDeclare(
-		exchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		channel.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
+	if err := declareTopology(channel); err != nil {
+		_ = channel.Close()
+		_ = conn.Close()
+		return nil, err
 	}
 
-	_, err = channel.QueueDeclare(
-		queueName,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		channel.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
+	// Process one message at a time so a restart loses at most one message and
+	// the database is not flooded during a spike.
+	if err := channel.Qos(1, 0, false); err != nil {
+		_ = channel.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("set QoS: %w", err)
 	}
 
-	err = channel.QueueBind(
-		queueName,
-		routingKey,
-		exchangeName,
-		false,
-		nil,
-	)
-	if err != nil {
-		channel.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to bind queue: %w", err)
-	}
-
-	log.Println("Connected to RabbitMQ successfully")
-	return &RabbitMQConsumer{
-		conn:      conn,
-		channel:   channel,
-		orderRepo: orderRepo,
-	}, nil
+	log.Println("connected to RabbitMQ")
+	return &Consumer{conn: conn, channel: channel, store: store, dbTimeout: dbTimeout}, nil
 }
 
-// Close closes the RabbitMQ connection
-func (c *RabbitMQConsumer) Close() {
-	if c.channel != nil {
-		c.channel.Close()
+func dial(url string) (*amqp.Connection, error) {
+	var conn *amqp.Connection
+	var err error
+	for attempt := 1; attempt <= connectAttempts; attempt++ {
+		conn, err = amqp.Dial(url)
+		if err == nil {
+			return conn, nil
+		}
+		log.Printf("rabbitmq not ready (attempt %d/%d): %v", attempt, connectAttempts, err)
+		time.Sleep(connectBackoff)
 	}
-	if c.conn != nil {
-		c.conn.Close()
-	}
+	return nil, fmt.Errorf("connect to rabbitmq after %d attempts: %w", connectAttempts, err)
 }
 
-// Start begins consuming messages from the queue
-func (c *RabbitMQConsumer) Start() error {
-	err := c.channel.Qos(1, 0, false)
-	if err != nil {
-		return fmt.Errorf("failed to set QoS: %w", err)
+func declareTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(exchangeName, "direct", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare exchange %q: %w", exchangeName, err)
 	}
-
-	msgs, err := c.channel.Consume(
-		queueName,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to start consuming: %w", err)
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare queue %q: %w", queueName, err)
 	}
-
-	log.Printf("Order Worker started. Waiting for messages on queue: %s", queueName)
-
-	for msg := range msgs {
-		c.processMessage(msg)
+	if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
+		return fmt.Errorf("bind queue %q: %w", queueName, err)
 	}
-
 	return nil
 }
 
-func (c *RabbitMQConsumer) processMessage(msg amqp.Delivery) {
-	var event OrderEvent
-	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		log.Printf("Failed to unmarshal: %v", err)
-		msg.Nack(false, false)
+// Close releases the broker resources.
+func (c *Consumer) Close() {
+	if c.channel != nil {
+		_ = c.channel.Close()
+	}
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+}
+
+// Run consumes messages until ctx is cancelled or the broker closes the stream.
+// It returns nil only on a clean shutdown via ctx.
+func (c *Consumer) Run(ctx context.Context) error {
+	// A named consumer tag lets us cancel delivery on shutdown while still
+	// finishing the message currently being processed.
+	const consumerTag = "order-worker"
+
+	deliveries, err := c.channel.Consume(queueName, consumerTag, false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("start consuming from %q: %w", queueName, err)
+	}
+
+	closed := c.conn.NotifyClose(make(chan *amqp.Error, 1))
+	log.Printf("order worker ready, consuming from queue %q", queueName)
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Stop new deliveries, then drain what the broker already sent so
+			// those messages are redelivered rather than lost.
+			if err := c.channel.Cancel(consumerTag, false); err != nil {
+				log.Printf("cancel consumer: %v", err)
+			}
+			for msg := range deliveries {
+				if err := msg.Nack(false, true); err != nil {
+					log.Printf("nack during shutdown: %v", err)
+				}
+			}
+			return nil
+
+		case amqpErr := <-closed:
+			if amqpErr == nil {
+				return ErrConnectionClosed
+			}
+			return fmt.Errorf("%w: %w", ErrConnectionClosed, amqpErr)
+
+		case msg, ok := <-deliveries:
+			if !ok {
+				return ErrConnectionClosed
+			}
+			c.handle(ctx, msg)
+		}
+	}
+}
+
+// handle processes one delivery and acknowledges it according to whether the
+// failure is retryable.
+func (c *Consumer) handle(ctx context.Context, msg amqp.Delivery) {
+	event, err := decode(msg.Body)
+	if err != nil {
+		// A message we cannot parse will never parse. Discard it.
+		log.Printf("discarding unprocessable message: %v", err)
+		reject(msg, false)
 		return
 	}
 
-	order := &repository.Order{
-		ID:        event.OrderID,
-		UserID:    event.UserID,
-		ProductID: event.ProductID,
-		Qty:       event.Qty,
-		Status:    repository.OrderStatusPending,
-		CreatedAt: event.Timestamp,
-	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.dbTimeout)
+	defer cancel()
 
-	// Create Order
-	if err := c.orderRepo.Create(order); err != nil {
-		log.Printf("DB Error Create: %v", err)
-		msg.Nack(false, true)
-		return
-	}
+	status, err := c.store.Persist(dbCtx, event)
+	switch {
+	case err == nil:
+		log.Printf("order %s persisted with status %s", event.OrderID, status)
+		acknowledge(msg)
 
-	// SYNC: Update Product Stock in DB (Eventual Consistency)
-	if err := c.orderRepo.DecreaseProductStock(event.ProductID, event.Qty); err != nil {
-		log.Printf("DB Error Stock Sync: %v", err)
-		// We still acknowledge the order creation, as stock is primarily managed in Redis.
-		// In a real system, you might flag this for reconciliation.
-	}
+	case errors.Is(err, repository.ErrAlreadyPersisted):
+		// At-least-once delivery: the order is already stored, so this is a
+		// successful outcome, not an error.
+		log.Printf("order %s already persisted, acknowledging redelivery", event.OrderID)
+		acknowledge(msg)
 
-	// Update Status to Success
-	if err := c.orderRepo.UpdateStatus(event.OrderID, repository.OrderStatusSuccess); err != nil {
-		log.Printf("Failed to update status: %v", err)
-	}
+	case errors.Is(err, repository.ErrPermanent):
+		// Retrying cannot help. Drop the message instead of requeueing it
+		// forever, which would block every order behind it.
+		log.Printf("discarding order %s, permanent failure: %v", event.OrderID, err)
+		reject(msg, false)
 
-	msg.Ack(false)
+	default:
+		// Transient failure such as a database outage. Requeue after a short
+		// delay so redelivery does not become a hot loop.
+		log.Printf("transient failure for order %s, requeueing: %v", event.OrderID, err)
+		time.Sleep(retryDelay)
+		reject(msg, true)
+	}
+}
+
+func decode(body []byte) (models.OrderEvent, error) {
+	var event models.OrderEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		return event, fmt.Errorf("unmarshal order event: %w", err)
+	}
+	if err := event.Validate(); err != nil {
+		return event, err
+	}
+	return event, nil
+}
+
+func acknowledge(msg amqp.Delivery) {
+	if err := msg.Ack(false); err != nil {
+		log.Printf("ack message: %v", err)
+	}
+}
+
+func reject(msg amqp.Delivery, requeue bool) {
+	if err := msg.Nack(false, requeue); err != nil {
+		log.Printf("nack message: %v", err)
+	}
 }

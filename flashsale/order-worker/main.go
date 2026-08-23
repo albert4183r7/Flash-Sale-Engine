@@ -1,8 +1,11 @@
+// Command order-worker consumes order events from RabbitMQ and persists them to
+// PostgreSQL, deducting durable product stock as part of the same transaction.
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -14,37 +17,48 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("order worker: %v", err)
+	}
+	log.Println("order worker stopped")
+}
+
+func run() error {
+	// A missing .env is normal in containers, where configuration comes from the
+	// environment directly.
 	if err := godotenv.Load("../.env"); err != nil {
-		log.Println("No .env file found")
+		log.Println("no .env file found, using environment variables")
 	}
 
-	log.Println("Starting Order Worker...")
-	cfg := config.Load()
-
-	pgClient, err := postgres.NewClient(cfg.PostgresURL)
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+		return err
 	}
-	defer pgClient.Close()
-    
-    // Schema is now handled by init.sql or migration scripts
-	// if err := pgClient.InitializeSchema(); err != nil { ... }
 
-	orderRepo := repository.NewOrderRepository(pgClient.DB())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	rabbitConsumer, err := consumer.NewRabbitMQConsumer(cfg.RabbitMQURL, orderRepo)
+	log.Println("starting order worker")
+
+	db, err := postgres.Connect(ctx, cfg.PostgresURL)
 	if err != nil {
-		log.Fatalf("Failed to create RabbitMQ consumer: %v", err)
+		return err
 	}
-	defer rabbitConsumer.Close()
+	defer func() { _ = db.Close() }()
 
-	go func() {
-		if err := rabbitConsumer.Start(); err != nil {
-			log.Fatalf("Consumer error: %v", err)
-		}
-	}()
+	orders := repository.NewOrderRepository(db)
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	c, err := consumer.New(cfg.RabbitMQURL, orders, cfg.DBTimeout)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	// Run blocks until shutdown is requested or the broker connection drops.
+	// Losing the connection is reported as an error so the process exits and its
+	// supervisor restarts it, rather than idling while consuming nothing.
+	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
