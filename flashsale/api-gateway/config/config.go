@@ -50,7 +50,8 @@ func Load() (*Config, error) {
 	internalToken, err := env.Require("INTERNAL_API_TOKEN")
 	errs = append(errs, err)
 
-	postgresURL, err := env.Require("POSTGRES_URL")
+	// Assembled from POSTGRES_* parts unless POSTGRES_URL overrides them.
+	postgresURL, err := env.PostgresDSN()
 	errs = append(errs, err)
 
 	redisAddr, err := env.Require("REDIS_ADDR")

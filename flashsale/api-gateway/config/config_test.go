@@ -14,7 +14,7 @@ func setValidEnv(t *testing.T) {
 	t.Setenv("JWT_SECRET", "a-test-secret-at-least-16-chars")
 	t.Setenv("INTERNAL_API_TOKEN", "internal-token")
 	t.Setenv("PURCHASE_SERVICE_URL", "http://localhost:8081")
-	t.Setenv("POSTGRES_URL", "postgres://localhost:5432/flashsale?sslmode=disable")
+	t.Setenv("POSTGRES_HOST", "localhost")
 	t.Setenv("REDIS_ADDR", "localhost:6379")
 }
 
@@ -65,11 +65,12 @@ func TestLoadReadsOverrides(t *testing.T) {
 // JWT secret would mean accepting tokens anybody can forge, so the gateway has
 // to refuse rather than fall back to a default.
 func TestLoadRequiresSecrets(t *testing.T) {
+	// POSTGRES_URL is deliberately absent: the DSN is assembled from
+	// POSTGRES_* parts when no complete URL is supplied.
 	required := []string{
 		"JWT_SECRET",
 		"INTERNAL_API_TOKEN",
 		"PURCHASE_SERVICE_URL",
-		"POSTGRES_URL",
 		"REDIS_ADDR",
 	}
 
@@ -95,14 +96,13 @@ func TestLoadReportsAllMissingVariables(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("INTERNAL_API_TOKEN", "")
 	t.Setenv("PURCHASE_SERVICE_URL", "")
-	t.Setenv("POSTGRES_URL", "")
 	t.Setenv("REDIS_ADDR", "")
 
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("Load() = nil, want an error")
 	}
-	for _, key := range []string{"JWT_SECRET", "INTERNAL_API_TOKEN", "POSTGRES_URL", "REDIS_ADDR"} {
+	for _, key := range []string{"JWT_SECRET", "INTERNAL_API_TOKEN", "PURCHASE_SERVICE_URL", "REDIS_ADDR"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error does not mention %s: %v", key, err)
 		}
@@ -168,4 +168,38 @@ func TestValidateRejectsNonPositiveLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The database URL may be supplied whole or as parts. Both must reach the same
+// place, so that Docker Compose can redirect a service by host alone.
+func TestLoadResolvesPostgresFromPartsOrURL(t *testing.T) {
+	t.Run("from parts", func(t *testing.T) {
+		setValidEnv(t)
+		t.Setenv("POSTGRES_URL", "")
+		t.Setenv("POSTGRES_HOST", "localhost")
+		t.Setenv("POSTGRES_PASSWORD", "pw")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		want := "postgres://postgres:pw@localhost:5432/flashsale?sslmode=disable"
+		if cfg.PostgresURL != want {
+			t.Errorf("PostgresURL = %q, want %q", cfg.PostgresURL, want)
+		}
+	})
+
+	t.Run("explicit url wins", func(t *testing.T) {
+		setValidEnv(t)
+		t.Setenv("POSTGRES_URL", "postgres://app@managed.example.com:5432/sales?sslmode=require")
+		t.Setenv("POSTGRES_HOST", "ignored")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.PostgresURL != "postgres://app@managed.example.com:5432/sales?sslmode=require" {
+			t.Errorf("PostgresURL = %q, want the explicit POSTGRES_URL", cfg.PostgresURL)
+		}
+	})
 }

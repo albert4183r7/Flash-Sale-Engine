@@ -33,10 +33,12 @@ func Load() (*Config, error) {
 	redisAddr, err := env.Require("REDIS_ADDR")
 	errs = append(errs, err)
 
-	rabbitURL, err := env.Require("RABBITMQ_URL")
+	// Assembled from RABBITMQ_* parts unless RABBITMQ_URL overrides them.
+	rabbitURL, err := env.AMQPURL()
 	errs = append(errs, err)
 
-	postgresURL, err := env.Require("POSTGRES_URL")
+	// Assembled from POSTGRES_* parts unless POSTGRES_URL overrides them.
+	postgresURL, err := env.PostgresDSN()
 	errs = append(errs, err)
 
 	internalToken, err := env.Require("INTERNAL_API_TOKEN")

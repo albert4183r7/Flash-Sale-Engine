@@ -9,12 +9,12 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/flashsale/common/env"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq" // database/sql driver
 	"golang.org/x/crypto/bcrypt"
@@ -46,9 +46,11 @@ func run() error {
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load()
 
-	dbURL := os.Getenv("POSTGRES_URL")
-	if dbURL == "" {
-		return errors.New("POSTGRES_URL is not set; copy .env.example to .env or export it")
+	// Same resolution as the services: assembled from POSTGRES_* parts unless
+	// POSTGRES_URL overrides them.
+	dbURL, err := env.PostgresDSN()
+	if err != nil {
+		return err
 	}
 
 	password := os.Getenv("SEED_PASSWORD")

@@ -427,10 +427,34 @@ where it cannot work.
 | :--- | :--- | :--- |
 | `JWT_SECRET` | gateway | Signs access tokens. Minimum 16 characters. **Secret.** |
 | `INTERNAL_API_TOKEN` | gateway, purchase | Authenticates the gateway to the purchase service. **Secret.** |
-| `POSTGRES_URL` | all three | PostgreSQL connection string. **Contains a password.** |
 | `REDIS_ADDR` | gateway, purchase | Redis address, `host:port`. |
-| `RABBITMQ_URL` | purchase, worker | AMQP connection string. **Contains a password.** |
 | `PURCHASE_SERVICE_URL` | gateway | Base URL of the purchase service. |
+
+### Connection details
+
+PostgreSQL and RabbitMQ are configured as separate parts, and each service
+assembles the connection URL itself. That keeps credentials out of
+`.env.example` and `docker-compose.yml`, and lets Compose redirect a service to
+a container by overriding the host alone — Compose passes `env_file` values
+through literally, so a `${POSTGRES_USER}` written inside a URL would never
+expand.
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `POSTGRES_HOST` | `localhost` | Database host |
+| `POSTGRES_PORT` | `5432` | Database port |
+| `POSTGRES_USER` | `postgres` | Database user |
+| `POSTGRES_PASSWORD` | empty | Database password. **Secret.** |
+| `POSTGRES_DB` | `flashsale` | Database name |
+| `POSTGRES_SSLMODE` | `disable` | `sslmode` for the connection |
+| `RABBITMQ_HOST` | `localhost` | Broker host |
+| `RABBITMQ_PORT` | `5672` | Broker port |
+| `RABBITMQ_USER` | empty | Broker user; blank leaves it to the client default |
+| `RABBITMQ_PASSWORD` | empty | Broker password. **Secret.** |
+| `RABBITMQ_VHOST` | empty | Broker virtual host |
+
+Set `POSTGRES_URL` or `RABBITMQ_URL` to a complete connection string to bypass
+the parts above — useful for a managed database, a connection pooler, or CI.
 
 ### Optional
 

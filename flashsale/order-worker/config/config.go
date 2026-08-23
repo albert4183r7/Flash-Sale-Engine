@@ -26,10 +26,12 @@ type Config struct {
 func Load() (*Config, error) {
 	var errs []error
 
-	rabbitURL, err := env.Require("RABBITMQ_URL")
+	// Assembled from RABBITMQ_* parts unless RABBITMQ_URL overrides them.
+	rabbitURL, err := env.AMQPURL()
 	errs = append(errs, err)
 
-	postgresURL, err := env.Require("POSTGRES_URL")
+	// Assembled from POSTGRES_* parts unless POSTGRES_URL overrides them.
+	postgresURL, err := env.PostgresDSN()
 	errs = append(errs, err)
 
 	dbTimeout, err := env.Duration("DB_TIMEOUT", 10*time.Second)

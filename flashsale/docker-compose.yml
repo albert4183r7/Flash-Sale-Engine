@@ -3,6 +3,11 @@
 # Configuration comes from .env (copy it from .env.example first). Each service
 # also receives an `environment:` block that overrides the host-oriented values
 # in .env with the hostnames that apply inside the Compose network.
+#
+# Connection details are passed as separate parts rather than as a ready-made
+# URL: the services assemble the URL themselves, which keeps credentials out of
+# this file and out of .env.example. Compose passes env_file values through
+# literally, so a "${POSTGRES_USER}" inside a URL there would never expand.
 
 services:
   redis:
@@ -89,7 +94,11 @@ services:
       - .env
     environment:
       API_GATEWAY_PORT: 8080
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
       REDIS_ADDR: redis:6379
       PURCHASE_SERVICE_URL: http://purchase-service:8081
     healthcheck:
@@ -123,9 +132,16 @@ services:
       - .env
     environment:
       PURCHASE_SERVICE_PORT: 8081
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
       REDIS_ADDR: redis:6379
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
       interval: 10s
@@ -149,8 +165,15 @@ services:
     env_file:
       - .env
     environment:
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-flashsale}?sslmode=disable
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
 
 networks:
   flashsale-network:
