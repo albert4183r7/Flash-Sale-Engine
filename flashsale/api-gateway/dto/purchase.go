@@ -1,28 +1,46 @@
 package dto
 
-import "github.com/google/uuid"
+import (
+	"time"
 
-// PurchaseRequest represents a purchase request
+	"github.com/flashsale/common/models"
+	"github.com/google/uuid"
+)
+
+// PurchaseRequest is the body of POST /purchase. The buyer is taken from the
+// access token, never from the request body.
 type PurchaseRequest struct {
-	ProductID uuid.UUID `json:"product_id" binding:"required,gt=0"`
-	Qty       int 		`json:"qty" binding:"required,gt=0,lte=10"`
+	ProductID uuid.UUID `json:"product_id" binding:"required"`
+	Qty       int       `json:"qty" binding:"required,gt=0,lte=10"`
 }
 
-// PurchaseResponse represents a purchase response
+// PurchaseResponse acknowledges an accepted purchase. The order is not yet
+// persisted at this point, which is why the status is PENDING.
 type PurchaseResponse struct {
-	OrderID   uuid.UUID 	`json:"order_id"`
-	Status    string 		`json:"status"`
-	Message   string 		`json:"message"`
-	ProductID uuid.UUID    	`json:"product_id"`
-	Qty       int    		`json:"qty"`
+	OrderID   uuid.UUID          `json:"order_id"`
+	Status    models.OrderStatus `json:"status"`
+	ProductID uuid.UUID          `json:"product_id"`
+	Qty       int                `json:"qty"`
 }
 
-// OrderStatusResponse represents an order status response
-type OrderStatusResponse struct {
-	OrderID   uuid.UUID `json:"order_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	ProductID uuid.UUID `json:"product_id"`
-	Qty       int    	`json:"qty"`
-	Status    string 	`json:"status"`
-	CreatedAt string 	`json:"created_at"`
+// OrderResponse describes a stored order.
+type OrderResponse struct {
+	OrderID   uuid.UUID          `json:"order_id"`
+	UserID    uuid.UUID          `json:"user_id"`
+	ProductID uuid.UUID          `json:"product_id"`
+	Qty       int                `json:"qty"`
+	Status    models.OrderStatus `json:"status"`
+	CreatedAt time.Time          `json:"created_at"`
+}
+
+// NewOrderResponse converts a stored order into its API representation.
+func NewOrderResponse(o models.Order) OrderResponse {
+	return OrderResponse{
+		OrderID:   o.ID,
+		UserID:    o.UserID,
+		ProductID: o.ProductID,
+		Qty:       o.Qty,
+		Status:    o.Status,
+		CreatedAt: o.CreatedAt,
+	}
 }

@@ -2,10 +2,9 @@ package models
 
 import "github.com/google/uuid"
 
-// User represents a user in the system
+// User represents an account that can place orders.
 type User struct {
-	ID       uuid.UUID  `json:"id"`
-	Email    string 	`json:"email"`
-	Password string 	`json:"-"`
-	Role     string		`json:"role"`
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
+	Role  string    `json:"role"`
 }

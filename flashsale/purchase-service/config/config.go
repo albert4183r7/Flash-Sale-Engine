@@ -1,30 +1,67 @@
+// Package config loads and validates the purchase service's configuration.
 package config
 
-import "os"
+import (
+	"errors"
+	"time"
 
-// Config holds Purchase Service configuration
+	"github.com/flashsale/common/env"
+)
+
+// Config holds the purchase service's configuration.
 type Config struct {
 	Port          string
 	RedisAddr     string
 	RedisPassword string
 	RabbitMQURL   string
-	IdempotencyTTL int
+	// PostgresURL is used only to warm the Redis stock counters at startup.
+	PostgresURL string
+	// InternalToken guards the routes the API gateway calls on this service.
+	// The purchase service trusts the user ID in its request bodies, so those
+	// routes must never be reachable by an untrusted caller.
+	InternalToken string
+	// IdempotencyTTL is how long a buyer's claim on a product is held, which
+	// bounds how quickly the same order can be submitted twice.
+	IdempotencyTTL  time.Duration
+	ShutdownTimeout time.Duration
 }
 
-// Load loads configuration from environment variables
-func Load() *Config {
+// Load reads configuration from the environment and validates it.
+func Load() (*Config, error) {
+	var errs []error
+
+	redisAddr, err := env.Require("REDIS_ADDR")
+	errs = append(errs, err)
+
+	// Assembled from RABBITMQ_* parts unless RABBITMQ_URL overrides them.
+	rabbitURL, err := env.AMQPURL()
+	errs = append(errs, err)
+
+	// Assembled from POSTGRES_* parts unless POSTGRES_URL overrides them.
+	postgresURL, err := env.PostgresDSN()
+	errs = append(errs, err)
+
+	internalToken, err := env.Require("INTERNAL_API_TOKEN")
+	errs = append(errs, err)
+
+	idempotencyTTL, err := env.Duration("IDEMPOTENCY_TTL", 2*time.Minute)
+	errs = append(errs, err)
+
+	shutdownTimeout, err := env.Duration("SHUTDOWN_TIMEOUT", 15*time.Second)
+	errs = append(errs, err)
+
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
 	return &Config{
-		Port:          getEnv("PURCHASE_SERVICE_PORT", ""),
-		RedisAddr:     getEnv("REDIS_ADDR", ""),
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		RabbitMQURL:   getEnv("RABBITMQ_URL", ""),
-		IdempotencyTTL: 120,
-	}
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
+		Port:            env.Get("PURCHASE_SERVICE_PORT", "8081"),
+		RedisAddr:       redisAddr,
+		RedisPassword:   env.Get("REDIS_PASSWORD", ""),
+		RabbitMQURL:     rabbitURL,
+		PostgresURL:     postgresURL,
+		InternalToken:   internalToken,
+		IdempotencyTTL:  idempotencyTTL,
+		ShutdownTimeout: shutdownTimeout,
+	}, nil
 }

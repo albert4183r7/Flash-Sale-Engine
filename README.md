@@ -1,469 +1,449 @@
-# ⚡ Flash Sale System
+# ⚡ Flash Sale Engine
 
-A flash sale backend engine built with **Go** microservices architecture. This project demonstrates distributed systems concepts including Microservices, JWT Authentication, Redis-based stock management, and Eventual Consistency.
+A flash sale backend built with **Go microservices**. In a flash sale a small
+amount of stock meets far more buyers than it can serve, all at the same moment.
+This engine answers every buyer immediately, **never oversells**, and **never
+creates the same order twice**.
+
+It covers these distributed-systems concepts: microservices, JWT
+authentication, atomic stock control in Redis, asynchronous processing with a
+message queue, idempotency, and eventual consistency.
+
+## 🧩 What the System Is Made Of
+
+**3 Go services**
+
+| Service | Role |
+| :--- | :--- |
+| 🚪 **API Gateway** (`:8080`) | The only public entry point. Handles signup/login (JWT), rate limiting, forwarding purchases, and reading or cancelling orders. |
+| ⚡ **Purchase Service** (`:8081`, internal) | The hot path. Checks idempotency, reserves stock atomically in Redis, and publishes an order event to RabbitMQ. Only the gateway can call it. |
+| 👷 **Order Worker** | A background consumer. Reads order events from RabbitMQ and writes each order to PostgreSQL. |
+
+**3 pieces of infrastructure**
+
+| Component | Used for |
+| :--- | :--- |
+| 🧠 **Redis** | Live stock counters, per-buyer idempotency keys, and the login cache |
+| 📨 **RabbitMQ** | Order queue between the purchase service and the worker |
+| 💾 **PostgreSQL** | Durable storage for users, products and orders |
 
 ## 📂 Project Structure
 
 ```
 flashsale/
-├── 🚪 api-gateway/          \# Gin-based HTTP gateway (Auth, Routing)
-├── ⚡ purchase-service/     \# High-speed Logic (Redis, RabbitMQ Publisher)
-├── 👷 order-worker/         \# Async Worker (Postgres, RabbitMQ Consumer)
-├── 🔧 common/               \# Shared utilities
-├── 📜 migrations/           \# SQL Schemas
-├── 🌱 scripts/              \# Utility scripts (Seeding)
-├── 🐳 deployments/          \# Docker configurations
-├── 🐙 docker-compose.yml    \# Full stack orchestration
-└── 📖 README.md             \# Documentation
+├── 🚪 api-gateway/          # Public HTTP API: auth, rate limit, orders
+├── ⚡ purchase-service/     # Redis stock reservation + RabbitMQ publisher
+├── 👷 order-worker/         # RabbitMQ consumer + PostgreSQL writer
+├── 🔧 common/               # Shared code: config, models, Postgres & RabbitMQ setup
+├── 🧪 e2e/                  # End-to-end tests that run the real services
+├── 📜 migrations/           # SQL schema
+├── 🌱 scripts/              # Demo data seeder
+├── 🐳 deployments/          # Dockerfiles
+├── 🐙 docker-compose.yml    # Full stack orchestration
+└── 🔑 .env.example          # Configuration template
 ```
 
 ## 🏗️ System Architecture
 
 ### 🚀 How It Works
 
-Imagine a crowded concert ticket sale. If everyone pushes the ticket clerk at once, the line stops moving. This system solves that problem by splitting the work into three distinct roles:
+Think of a crowded concert ticket sale. If everyone pushes the ticket clerk at
+once, the line stops moving. This system splits the work into three roles:
 
-1.  **🕵️ The Bouncer (API Gateway):** Checks your ID at the door. If you aren't on the list (logged in), you don't get in.
-2.  **🏎️ The Fast Cashier (Purchase Service):** Instead of writing a full contract, this cashier just checks a simple tally board (**Redis**).
-    * *Stock available?* They hand you a "Reserved" ticket instantly.
-    * *Stock empty?* They say "Sold Out" immediately.
-3.  **🗄️ The Back Office (Order Worker):** A separate team takes the "Reserved" tickets from a pile (**RabbitMQ**) and quietly files the official paperwork (**PostgreSQL**) in the background, so you don't have to wait for the filing cabinet to open.
+1. **🕵️ The Bouncer (API Gateway):** checks your ID at the door. Without a valid
+   login token, you don't get in.
+2. **🏎️ The Fast Cashier (Purchase Service):** doesn't write a full contract. It
+   only checks a tally board (**Redis**).
+   - *Stock available?* You get a "Reserved" ticket instantly.
+   - *Stock empty?* You hear "Sold Out" instantly.
+3. **🗄️ The Back Office (Order Worker):** a separate team takes the reserved
+   tickets from a pile (**RabbitMQ**) and files the official paperwork
+   (**PostgreSQL**) in the background, so you never wait on the filing cabinet.
 
----
+```mermaid
+graph LR
+    User((👤 Buyer))
+    AG[🚪 API Gateway<br/>JWT · rate limit]
+    PS[⚡ Purchase Service<br/>reserve stock]
+    W[👷 Order Worker]
+
+    subgraph Data [💾 Data & Queue]
+        R[(🧠 Redis)]
+        MQ[[📨 RabbitMQ]]
+        DB[(💾 PostgreSQL)]
+    end
+
+    User -->|HTTP + JWT| AG
+    AG -->|login cache| R
+    AG -->|users, orders| DB
+    AG -->|internal token| PS
+    PS -->|atomic stock + idempotency| R
+    PS -->|order.created| MQ
+    MQ --> W
+    W -->|insert order + deduct stock| DB
+```
 
 ### ⚙️ Technical Workflow
 
-The system optimizes for high concurrency by offloading reads and writes to memory:
+1. **🔐 Login with a cache-aside pattern.** The gateway looks up credentials in
+   Redis first. On a miss it reads PostgreSQL and caches the result for 1 hour,
+   so a login spike does not overload the database.
+2. **🧠 Atomic stock reservation.** The purchase service checks and decrements
+   stock in one **Lua script** inside Redis. Redis runs the script as a single
+   step, so even 1,000 requests in the same millisecond cannot take stock below
+   zero.
+3. **🔁 Idempotency.** Before reserving stock, the service sets a Redis key
+   `purchase:{user}:{product}` with `SETNX` and a 2-minute TTL. A double-click or
+   resubmission finds the key already set and gets `409 Duplicate purchase`.
+4. **📨 Asynchronous processing.** Once stock is reserved, the order event is
+   published to RabbitMQ with publisher confirms, and the buyer gets
+   `202 Accepted` right away. If publishing fails, the reserved stock and the
+   idempotency key are rolled back.
+5. **💾 Eventual consistency.** The order worker inserts the order and deducts
+   stock in PostgreSQL in a single transaction. `ON CONFLICT (id) DO NOTHING`
+   makes a redelivered message harmless, so RabbitMQ's at-least-once delivery
+   never creates a duplicate order.
+6. **🚫 Exactly-once cancellation.** Cancelling flips the order status and returns
+   its stock in one transaction. Only one request can ever cancel a given order,
+   so stock is never returned twice.
 
-1. **🔐 Authentication (API Gateway): Cache-Aside Pattern**: When a user logs in, the system first checks Redis. If the profile exists, it returns instantly.
-   - **Database Fallback**: If not in cache, it queries PostgreSQL, caches the result for 1 hour, and then proceeds. This prevents the database from crashing during login spikes.
-
-2. **🧠 In-Memory Locking (Purchase Service)**: The core engine. It talks to **Redis (RAM-based storage)** using atomic Lua scripts. This ensures that even if 1,000 requests hit at the exact same millisecond, the stock count is accurate and no double-booking occurs.
-
-3. **📨 Async Processing (RabbitMQ)**: Once stock is reserved in Redis, the system returns ``202 Accepted`` to the user immediately. It then publishes an event to a Message Queue.
-
-4. **💾 Eventual Consistency (Order Worker)**: A background worker consumes the message and performs the heavier operation of inserting the order into **PostgreSQL (Disk-based storage)**, ensuring data persistence without blocking the user's response time.
-  
+## 🔄 User Flow
 
 ```mermaid
-graph TD
-    %% Nodes
-    User((👤 User))
-    AG[🚪 API Gateway]
-    PS[⚡ Purchase Service]
-    W[👷 Order Worker]
-    
-    subgraph Data_Layer [💾 Data Persistence & Queue]
-        DB[(💾 PostgreSQL)]
-        R[(🧠 Redis Cache)]
-        MQ[📨 RabbitMQ]
-    end
+sequenceDiagram
+    actor U as 👤 Buyer
+    participant AG as 🚪 API Gateway
+    participant PS as ⚡ Purchase Service
+    participant R as 🧠 Redis
+    participant MQ as 📨 RabbitMQ
+    participant W as 👷 Order Worker
+    participant DB as 💾 PostgreSQL
 
-    %% 1. Authentication Flow (Cache-Aside)
-    User ==>|1. Login / Signup| AG
-    AG -.->|2a. Check Cache| R
-    R -.->|2b. Miss| AG
-    AG <==>|2c. Verify & Cache| DB
-    AG ==>|3. Return JWT Token| User
+    U->>AG: POST /auth/signup
+    U->>AG: POST /auth/login
+    AG->>R: cached credentials?
+    AG->>DB: (on cache miss) read user
+    AG-->>U: JWT token
 
-    %% 2. Purchase Flow
-    User ==>|4. POST /purchase + Token| AG
-    AG ==>|5. Validate & Forward| PS
-    PS <==>|6. Atomic Stock Decr| R
-    
-    %% 3. Async Processing
-    PS ==>|7. Publish Event| MQ
-    MQ ==>|8. Consume Message| W
-    W ==>|9. Insert Order & Sync| DB
-    
-    %% 4. Cancellation Flow (Atomic Restoration)
-    User -.->|10. DELETE /order| AG
-    AG -.->|11. Request Restore| PS
-    PS -.->|12. Increment Stock| R
-    AG -.->|13. Soft Delete & Restore| DB
+    U->>AG: POST /purchase (Bearer token)
+    AG->>PS: forward (buyer ID from token)
+    PS->>R: SETNX idempotency key
+    PS->>R: Lua: check & decrement stock
+    PS->>MQ: publish order.created
+    AG-->>U: 202 Accepted, status PENDING
 
-    %% Styling
-    %% Valid Link Indices: 0 to 14 (Total 15 links)
-    %% Green: Login & Purchase Steps (Indices 0-10)
-    linkStyle 0,1,2,3,4,5,6,7,8,9,10 stroke:#2ecc71,stroke-width:2px;
-    
-    %% Red/Dotted: Cancellation Steps (Indices 11-14)
-    linkStyle 11,12,13,14 stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5;
-````
+    MQ->>W: deliver event
+    W->>DB: insert order + deduct stock (1 transaction)
+
+    U->>AG: GET /orders/:id
+    AG-->>U: status SUCCESS
+
+    U->>AG: DELETE /orders/:id
+    AG->>DB: mark CANCELLED + restore stock (1 transaction)
+    AG->>PS: restore stock in Redis
+    AG-->>U: 200 cancelled
+```
+
+**Order status lifecycle:** `PENDING` (accepted, queued) → `SUCCESS` (stored by
+the worker) → `CANCELLED` (cancelled by the buyer). An order is stored as
+`FAILED` when PostgreSQL's stock cannot cover it, which flags a Redis/DB mismatch
+for reconciliation.
 
 ## 🛠️ Core Technologies
 
 | Technology | Purpose |
 | :--- | :--- |
-| **Go 1.23** | Fast, concurrent, simple syntax |
-| **Gin** | Lightweight HTTP framework |
-| **Redis** | In-memory stock & idempotency |
-| **RabbitMQ** | Async message processing |
-| **PostgreSQL** | Persistent order storage |
+| **Go 1.23** | Fast, concurrent services |
+| **Gin** | HTTP framework |
+| **Redis 7** | Stock counters, idempotency keys, login cache |
+| **RabbitMQ 3** | Asynchronous order queue |
+| **PostgreSQL 17** | Persistent storage |
+| **JWT (HS256)** | Stateless authentication |
 | **Docker Compose** | Local orchestration |
+| **GitHub Actions** | CI (lint, tests, Docker builds) and CD (publish images to GHCR) |
 
+## 📡 API Endpoints
 
-## 🏁 Quick Start
+All responses share one envelope:
+`{"success": bool, "message": "...", "data": {...}, "error": "..."}`
 
-### Option 1: 🐳 With Docker Compose (Recommended)
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | – | Health check |
+| `POST` | `/auth/signup` | – | Register: `{"email", "password"}` (password 8–72 chars) |
+| `POST` | `/auth/login` | – | Log in and receive a JWT |
+| `POST` | `/purchase` | Bearer | Buy: `{"product_id", "qty"}` (qty 1–10) |
+| `GET` | `/orders/:id` | Bearer | Get one of **your own** orders |
+| `DELETE` | `/orders/:id` | Bearer | Cancel one of **your own** orders and restore its stock |
 
-This automates the entire setup, including database creation and schema initialization.
+| Status | Meaning |
+| :--- | :--- |
+| `200` / `201` / `202` | OK / account created / purchase accepted (`PENDING`) |
+| `400` | Invalid body or value |
+| `401` | Missing or invalid token, wrong credentials |
+| `404` | Unknown product, or an order that is not yours |
+| `409` | Duplicate purchase, out of stock, email taken, already cancelled |
+| `429` | Rate limit exceeded (120 requests/minute per client) |
+| `503` | A dependency is unavailable |
+
+## 🏁 Setup
+
+### 1. ⚙️ Configure
 
 ```bash
-# 1. Setup Environment Variables
-# Create the .env file from the example template
+git clone https://github.com/albert4183r7/Flash-Sale-Engine.git
+cd Flash-Sale-Engine/flashsale
 cp .env.example .env
-
-# 2. Start all services
-cd flashsale && docker-compose up --build
-
-# 3. Seed the database (In a new terminal)
-# This populates initial products and users
-cd scripts && go run seed.go
 ```
 
------
+Fill in the four blank values in `.env`:
 
-### Option 2: 🛠️ Without Docker (Manual Setup)
+| Variable | Value |
+| :--- | :--- |
+| `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD` | Any value you choose |
+| `JWT_SECRET`, `INTERNAL_API_TOKEN` | Generate each with `openssl rand -hex 32` |
 
-#### Prerequisites (Windows)
+### 2a. 🐳 Run with Docker Compose (recommended)
 
-  - [Go 1.23+](https://go.dev/dl/)
-  - [Redis](https://github.com/tporadowski/redis/releases)
-  - [RabbitMQ](https://www.rabbitmq.com/download.html)
-  - [PostgreSQL](https://www.postgresql.org/download/windows/)
+```bash
+# from flashsale/
+docker compose up --build -d          # Redis, RabbitMQ, PostgreSQL + 3 services
+                                      # (the schema is applied automatically)
 
-#### Database Setup
+cd scripts && go run . && cd ..       # seed demo products & users, prints product IDs
+docker compose restart purchase-service   # reload Redis stock from the seeded products
+```
 
-You must manually create the database and run the schema file.
+> The purchase service copies stock from PostgreSQL into Redis **at startup**,
+> so restart it after seeding or after changing stock in the database.
 
-**PowerShell:**
+### 2b. 🛠️ Run without Docker
 
-```powershell
-# 1. Start Services
-net start redis
-net start rabbitmq
-net start postgresql-x64-15
+Requirements: Go 1.23+, PostgreSQL 13+, Redis 7+ and RabbitMQ 3+ running
+locally. Set `POSTGRES_PASSWORD`, `RABBITMQ_USER` and `RABBITMQ_PASSWORD` in
+`.env` to match your local installation.
 
-# 2. Create Database
+```bash
+# from flashsale/
 psql -U postgres -c "CREATE DATABASE flashsale;"
-
-# 3. Initialize Schema (Tables)
 psql -U postgres -d flashsale -f migrations/init.sql
-
-# 4. Setup Config
-# Manually create .env or set environment variables in your terminal session
-
-# 5. Seed Data
-cd flashsale\scripts
-go run seed.go
+cd scripts && go run . && cd ..
 ```
 
-#### Run Microservices
-
-Open 3 separate terminals:
-
-**Terminal 1 (API Gateway):**
-
-```powershell
-cd flashsale\api-gateway; go run main.go
-```
-
-**Terminal 2 (Purchase Service):**
-
-```powershell
-cd flashsale\purchase-service; go run main.go
-```
-
-**Terminal 3 (Order Worker):**
-
-```powershell
-cd flashsale/order-worker; go run main.go
-```
-
-
-## 🧪 API Endpoints & Testing Guide
-
-Use `curl` commands to test the system.
-
-### 1\. 📝 Sign Up
-
-Create a new user account.
+Then start each service in its own terminal, from its own folder. Each one
+reads `../.env`.
 
 ```bash
-curl.exe -X POST http://localhost:8080/auth/signup `
-  -H "Content-Type: application/json" `
-  -d '{"email": "tester@example.com", "password": "password123"}'
+cd purchase-service && go run .   # terminal 1 (start this one first)
+cd order-worker     && go run .   # terminal 2
+cd api-gateway      && go run .   # terminal 3
 ```
 
-**Example Output:**
+### 3. ✅ Verify
+
+```bash
+curl -s http://localhost:8080/health
+```
+
+## 🧪 Try It: Happy Path
+
+The examples use bash and [`jq`](https://jqlang.github.io/jq/). On Windows,
+use Git Bash or WSL.
+
+```bash
+BASE=http://localhost:8080
+EMAIL="buyer-$RANDOM@example.com"
+CRED=$(openssl rand -hex 12)     # a random password for the demo account
+PRODUCT_ID=<id of "iPhone 15 Pro" printed by the seeder>
+```
+
+**1. 📝 Sign up**
+
+```bash
+curl -s -X POST $BASE/auth/signup -H "Content-Type: application/json" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$CRED\"}"
+```
+
+```json
+{ "success": true, "message": "User registered successfully" }
+```
+
+**2. 🔑 Log in and keep the token**
+
+```bash
+TOKEN=$(curl -s -X POST $BASE/auth/login -H "Content-Type: application/json" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$CRED\"}" | jq -r .data.token)
+```
 
 ```json
 {
-  "message": "User registered successfully"
+  "success": true,
+  "message": "Login successful",
+  "data": { "token": "eyJhbGciOi...", "expires_in": 86400, "user_id": "…", "email": "…", "role": "user" }
 }
 ```
 
------
-
-### 2\. 🔑 Login
-
-Authenticate and receive a JWT token.
+**3. 🛍️ Purchase**
 
 ```bash
-$response = curl.exe -s -X POST "http://localhost:8080/auth/login" `
-  -H "Content-Type: application/json" `
-  -d '{"email": "tester@example.com", "password": "password123"}'
-
-# Parse JSON to get Token
-$json = $response | ConvertFrom-Json
-$TOKEN = $json.data.token
-
-# Display Full Response
-$json | ConvertTo-Json -Depth 5
+ORDER_ID=$(curl -s -X POST $BASE/purchase -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"product_id\":\"$PRODUCT_ID\",\"qty\":1}" | tee /dev/stderr | jq -r .data.order_id)
 ```
-
-**Example Output:**
 
 ```json
 {
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.***HIDDEN***",
-    "expires_in": 86400,
-    "user_id": 4,
-    "email": "tester@example.com",
-    "role": "user"
-  }
-}
-```
-
------
-
-### 3\. 🛍️ Purchase Item
-
-Buy a product (e.g., iPhone 15 Pro).
-
-```bash
-$response = curl.exe -s -X POST "http://localhost:8080/purchase" `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
-
-# Capture Order ID
-$json = $response | ConvertFrom-Json
-$ORDER_ID = $json.data.order_id
-echo "Order Created: $ORDER_ID"
-
-# Display Full Response
-$json | ConvertTo-Json -Depth 5
-```
-
-**Example Output:**
-
-```bash
-Order Created: your-order-id
-{
-  "data": {
-    "order_id": "your-order-id",
-    "status": "PENDING",
-    "message": "Your order is being processed",
-    "product_id": "5a634200-4793-4e51-b1af-92af946541d4",
-    "qty": 1
-  },
+  "success": true,
   "message": "Purchase accepted and queued for processing",
-  "success": true
+  "data": { "order_id": "…", "status": "PENDING", "product_id": "…", "qty": 1 }
 }
 ```
 
------
+**4. 🔍 Check the order**
 
-### 4\. 🔍 Check Order Status
+The status becomes `SUCCESS` once the worker has stored the order.
 
 ```bash
-curl.exe -X GET http://localhost:8080/orders/$ORDER_ID `
-  -H "Authorization: Bearer $TOKEN"
+curl -s $BASE/orders/$ORDER_ID -H "Authorization: Bearer $TOKEN"
 ```
-
-**Example Output:**
 
 ```json
 {
-  "order_id":"7752725e-edde-434c-b6d4-af66055b89eb",
-  "status":"SUCCESS"
+  "success": true,
+  "message": "Order retrieved",
+  "data": { "order_id": "…", "user_id": "…", "product_id": "…", "qty": 1, "status": "SUCCESS", "created_at": "…" }
 }
 ```
 
------
-
-### 5\. 🚫 Cancel Order
-
-Cancels the order and restores stock.
+**5. 🚫 Cancel the order**
 
 ```bash
-# 5. Cancel order
-curl.exe -X DELETE http://localhost:8080/orders/$ORDER_ID `
-  -H "Authorization: Bearer $TOKEN"
+curl -s -X DELETE $BASE/orders/$ORDER_ID -H "Authorization: Bearer $TOKEN"
 ```
-
-**Example Output:**
 
 ```json
-{
-  "message": "Order cancelled and stock restored"
-}
+{ "success": true, "message": "Order cancelled and stock restored", "data": { "status": "CANCELLED", "…": "…" } }
 ```
 
-## ⚠️ Failure Test Cases
+## ⚠️ Try It: Failure Cases
 
-### Test Case A: 🔁 Duplicate Purchase (Idempotency) - TTL 2 minutes
+Run these after the happy path, using the same variables.
 
-Try buying the same product again immediately.
+| # | Case | Request | Expected |
+| :--- | :--- | :--- | :--- |
+| A | 🔁 Duplicate purchase (within the 2-minute idempotency window) | Repeat step 3 | `409` `Duplicate purchase request` |
+| B | 📉 Out of stock | Buy `qty: 9` of **MacBook Air M3** (seeded with 8) | `409` `Out of stock` |
+| C | 🔢 Invalid quantity | `qty: 0` or `qty: 11` | `400` `Invalid request` |
+| D | ⛔ No token | `POST /purchase` without `Authorization` | `401` `Authorization required` |
+| E | ❌ Wrong password | Log in with a wrong password | `401` `Login failed` / `Invalid credentials` |
+| F | 🔒 Someone else's order | `GET /orders/$ORDER_ID` with another user's token | `404` `Order not found` |
+| G | 🚫 Cancel twice | Repeat step 5 | `409` `Order cannot be cancelled` |
+| H | ⏳ Rate limit | 130 requests within a minute | `429` `Rate limit exceeded` |
 
 ```bash
-curl.exe -X POST "http://localhost:8080/purchase" `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
+# A. duplicate purchase
+curl -s -X POST $BASE/purchase -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d "{\"product_id\":\"$PRODUCT_ID\",\"qty\":1}"
+
+# B. out of stock
+MACBOOK_ID=<id of "MacBook Air M3" printed by the seeder>
+curl -s -X POST $BASE/purchase -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d "{\"product_id\":\"$MACBOOK_ID\",\"qty\":9}"
+
+# D. no token
+curl -s -X POST $BASE/purchase -H "Content-Type: application/json" \
+  -d "{\"product_id\":\"$PRODUCT_ID\",\"qty\":1}"
+
+# H. rate limit: print the status code of each request
+for i in $(seq 1 130); do curl -s -o /dev/null -w "%{http_code} " $BASE/health; done; echo
 ```
 
-**Example Output:**
+## 🤖 Automated Tests
 
-```json
-{
-  "success": false,
-  "message": "Duplicate purchase request",
-  "error": "You already have a pending purchase for product 1"
-}
-```
-
------
-
-### Test Case B: 📉 Out of Stock
-
-Try buying more than available stock (e.g., 9 units).
+Each module is tested separately. Unit tests need no infrastructure:
 
 ```bash
-curl.exe -X POST http://localhost:8080/purchase `
-  -H "Authorization: Bearer $TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": "5d35f356-5e3c-4c41-85d5-a0f7273d82c0", "qty": 9}'
+cd flashsale/<module> && go test -race ./...
+# <module>: common | api-gateway | purchase-service | order-worker | e2e
 ```
 
-**Example Output:**
-
-```json
-{
-  "success": false,
-  "message": "Out of stock",
-  "error": "Product 5d35f356-5e3c-4c41-85d5-a0f7273d82c0 is out of stock"
-}
-```
-
------
-
-### Test Case C: ⛔ Unauthorized
-
-Try accessing without a token.
+Integration and end-to-end tests need real PostgreSQL, Redis and RabbitMQ, and
+**skip themselves** when these are not configured. To run everything locally:
 
 ```bash
-curl.exe -X POST http://localhost:8080/purchase `
-  -H "Content-Type: application/json" `
-  -d '{"product_id": 5a634200-4793-4e51-b1af-92af946541d4, "qty": 1}'
+# from flashsale/, with the infrastructure running (docker compose up -d redis rabbitmq postgres)
+set -a; source .env; set +a
+export POSTGRES_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@localhost:5432/$POSTGRES_DB?sslmode=disable"
+export RABBITMQ_URL="amqp://$RABBITMQ_USER:$RABBITMQ_PASSWORD@localhost:5672/"
+
+for m in common api-gateway purchase-service order-worker; do (cd $m && go test -race ./...); done
+cd e2e && go test -count=1 -timeout 10m ./...
 ```
 
-**Example Output:**
+The end-to-end suite builds the three services, runs them on ports
+18080/18081, and drives them over HTTP. Together with the integration tests,
+the suite checks:
 
-```json
-{
-  "success": false,
-  "message": "Authorization required",
-  "error": "Missing Authorization header"
-}
-```
+| Area | Test cases |
+| :--- | :--- |
+| 🛒 Purchase | Order is persisted and stock deducted in Redis and PostgreSQL; invalid requests rejected; refused when stock is short |
+| 🔥 Concurrency | **60 concurrent buyers vs 15 units → exactly 15 orders**, no oversell |
+| 🔁 Idempotency | Duplicate purchase refused; allowed again after the TTL expires |
+| 🚫 Cancellation | Stock restored in both stores; exactly once even under concurrent cancels |
+| 🔒 Security | Protected routes need a token; orders are private to their owner; purchase service rejects callers without the internal token |
+| 🔑 Auth | Bad credentials rejected; duplicate and weak signups rejected |
+| 📨 Worker | Redelivered messages ignored; bad messages discarded; transient DB failures retried |
 
------
+## 🚀 CI/CD
 
-### Test Case D: ⏳ Rate Limiting (120 Limit)
+| Workflow | Runs when | What it does |
+| :--- | :--- | :--- |
+| **CI** (`.github/workflows/ci.yml`) | Every push and pull request to `main` or `dev` | `gofmt`, `go vet`, `golangci-lint`, all tests with `-race` (against real PostgreSQL, Redis and RabbitMQ), and a build of the three Docker images |
+| **CD** (`.github/workflows/cd.yml`) | After CI passes on `main`, or by hand from the Actions tab | Builds the three service images from the commit CI tested and publishes them to **GitHub Container Registry**, tagged `sha-<commit>` and `latest` |
 
-Spam the API with requests (Simulate loop).
+Published images:
 
 ```bash
-# Run 150 requests to break the 120 limit
-1..150 | ForEach-Object {
-  $response = curl.exe -s -X POST "http://localhost:8080/purchase" `
-    -H "Authorization: Bearer $TOKEN" `
-    -H "Content-Type: application/json" `
-    -d '{"product_id": "5a634200-4793-4e51-b1af-92af946541d4", "qty": 1}'
-
-  # Print only if it contains "Rate limit" to reduce noise
-  if ($response -match "Rate limit") {
-      echo $response
-  }
+docker pull ghcr.io/albert4183r7/flash-sale-api-gateway:latest
+docker pull ghcr.io/albert4183r7/flash-sale-purchase-service:latest
+docker pull ghcr.io/albert4183r7/flash-sale-order-worker:latest
 ```
 
-**Example Output:**
-
-```json
-{
-  "success": false,
-  "message": "Rate limit exceeded",
-  "error": "Too many requests. Please try again later."
-}
-```
-
------
-
-### Test Case E: ❌ Invalid Credentials
-
-Login with wrong password.
-
-```bash
-curl.exe -X POST http://localhost:8080/auth/login `
-  -H "Content-Type: application/json" `
-  -d '{"email": "tester@example.com", "password": "wrong"}'
-```
-
-**Example Output:**
-
-```json
-{
-  "error": "Invalid credentials"
-}
-```
+> New GHCR packages are private by default. To let anyone pull them, open each
+> package under the repository's **Packages** and set its visibility to public.
 
 ## 💾 Database Schema
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
+CREATE TABLE users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email         VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(50) DEFAULT 'user',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    role          VARCHAR(50) NOT NULL DEFAULT 'user',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS products (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    price INT NOT NULL,
-    stock INT NOT NULL CHECK (stock >= 0)
+CREATE TABLE products (
+    id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name  VARCHAR(255) NOT NULL UNIQUE,
+    price INT NOT NULL CHECK (price >= 0),
+    stock INT NOT NULL CHECK (stock >= 0)        -- durable guard against overselling
 );
 
-CREATE TABLE IF NOT EXISTS orders (
-    id UUID PRIMARY KEY,  -- This 'id' IS the order_id
-    user_id UUID NOT NULL REFERENCES users(id),
+CREATE TABLE orders (
+    id         UUID PRIMARY KEY,                 -- order_id, generated by the purchase service
+    user_id    UUID NOT NULL REFERENCES users(id),
     product_id UUID NOT NULL REFERENCES products(id),
-    qty INT NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    qty        INT NOT NULL CHECK (qty > 0),
+    status     VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+               CHECK (status IN ('PENDING', 'SUCCESS', 'FAILED', 'CANCELLED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 ```
+
+The full, re-runnable schema with indexes is in
+[`flashsale/migrations/init.sql`](flashsale/migrations/init.sql).
 
 ## 📄 License
 
-MIT - Use for portfolio or personal projects!
+MIT. Free to use for portfolio or personal projects.

@@ -1,68 +1,94 @@
+// Package middleware holds the API gateway's HTTP middleware.
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/flashsale/common/response"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-// JWTClaims represents the claims in the JWT token
-type JWTClaims struct {
-	UserID uuid.UUID    `json:"user_id"`
-	Email  string 		`json:"email"`
-	Role   string 		`json:"role"`
+// Context keys under which the authenticated identity is stored.
+const (
+	ContextUserID = "user_id"
+	ContextEmail  = "email"
+	ContextRole   = "role"
+)
+
+// Claims are the claims the gateway issues and expects.
+type Claims struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-// JWTAuth returns the JWT authentication middleware
+// JWTAuth authenticates requests using a bearer token.
 func JWTAuth(secret string) gin.HandlerFunc {
+	key := []byte(secret)
+
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Authorization required",
-				"error":   "Missing Authorization header",
-			})
+		token, err := bearerToken(c.GetHeader("Authorization"))
+		if err != nil {
+			response.Abort(c, http.StatusUnauthorized, "Authorization required", err.Error())
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Invalid authorization format",
-				"error":   "Authorization header must be: Bearer <token>",
-			})
+		var claims Claims
+		// Pinning the accepted algorithm stops a token signed with "none", or
+		// with an asymmetric algorithm confusion trick, from being accepted.
+		parsed, err := jwt.ParseWithClaims(token, &claims,
+			func(*jwt.Token) (any, error) { return key, nil },
+			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+			jwt.WithExpirationRequired(),
+		)
+		if err != nil || !parsed.Valid {
+			response.Abort(c, http.StatusUnauthorized, "Invalid token",
+				"Token is invalid or expired")
 			return
 		}
 
-		tokenString := parts[1]
-
-		claims := &JWTClaims{}
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return []byte(secret), nil
-		})
-
-		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Invalid token",
-				"error":   "Token is invalid or expired",
-			})
+		userID, err := uuid.Parse(claims.UserID)
+		if err != nil || userID == uuid.Nil {
+			// A well-signed token without a usable subject cannot authorise
+			// anything, and must not fall through as the zero UUID.
+			response.Abort(c, http.StatusUnauthorized, "Invalid token",
+				"Token does not identify a user")
 			return
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("email", claims.Email)
-		c.Set("role", claims.Role)
+		c.Set(ContextUserID, userID)
+		c.Set(ContextEmail, claims.Email)
+		c.Set(ContextRole, claims.Role)
 
 		c.Next()
 	}
+}
+
+// bearerToken extracts the credential from an Authorization header.
+func bearerToken(header string) (string, error) {
+	if header == "" {
+		return "", errors.New("missing Authorization header")
+	}
+
+	scheme, token, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "bearer") || strings.TrimSpace(token) == "" {
+		return "", errors.New("authorization header must be: Bearer <token>")
+	}
+	return strings.TrimSpace(token), nil
+}
+
+// UserID returns the authenticated user's ID. It reports false when the request
+// did not pass through JWTAuth, so handlers never assume an identity.
+func UserID(c *gin.Context) (uuid.UUID, bool) {
+	value, exists := c.Get(ContextUserID)
+	if !exists {
+		return uuid.Nil, false
+	}
+	id, ok := value.(uuid.UUID)
+	return id, ok
 }
