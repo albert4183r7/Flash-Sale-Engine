@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
+	"github.com/flashsale/common/models"
 	"github.com/flashsale/common/response"
 	"github.com/google/uuid"
 )
@@ -63,7 +65,7 @@ type purchaseResponse struct {
 // Create asks the purchase service to reserve stock and queue an order.
 func (p *Purchase) Create(ctx context.Context, userID, productID uuid.UUID, qty int) (Result, error) {
 	var body purchaseResponse
-	status, err := p.post(ctx, "/purchase", purchaseRequest{
+	status, err := p.do(ctx, http.MethodPost, "/purchase", purchaseRequest{
 		UserID:    userID,
 		ProductID: productID,
 		Qty:       qty,
@@ -83,7 +85,7 @@ func (p *Purchase) Create(ctx context.Context, userID, productID uuid.UUID, qty 
 
 // RestoreStock returns cancelled units to the in-memory stock counter.
 func (p *Purchase) RestoreStock(ctx context.Context, productID uuid.UUID, qty int) error {
-	status, err := p.post(ctx, "/internal/stock/restore", restoreStockRequest{
+	status, err := p.do(ctx, http.MethodPost, "/internal/stock/restore", restoreStockRequest{
 		ProductID: productID,
 		Qty:       qty,
 	}, nil)
@@ -96,15 +98,42 @@ func (p *Purchase) RestoreStock(ctx context.Context, productID uuid.UUID, qty in
 	return nil
 }
 
-// post sends a JSON request and decodes the JSON response into out, which may
-// be nil when the body is not needed.
-func (p *Purchase) post(ctx context.Context, path string, payload, out any) (int, error) {
-	encoded, err := json.Marshal(payload)
+type pendingOrderResponse struct {
+	response.Body
+	Data models.OrderEvent `json:"data"`
+}
+
+// PendingOrder returns an order the purchase service has accepted but the
+// worker may not have stored yet. It reports false when no such order is held.
+func (p *Purchase) PendingOrder(ctx context.Context, orderID uuid.UUID) (models.OrderEvent, bool, error) {
+	var body pendingOrderResponse
+	status, err := p.do(ctx, http.MethodGet, "/internal/orders/"+orderID.String()+"/pending", nil, &body)
 	if err != nil {
-		return 0, fmt.Errorf("encode request for %s: %w", path, err)
+		return models.OrderEvent{}, false, err
+	}
+	switch status {
+	case http.StatusOK:
+		return body.Data, true, nil
+	case http.StatusNotFound:
+		return models.OrderEvent{}, false, nil
+	default:
+		return models.OrderEvent{}, false, fmt.Errorf("purchase service returned %d reading pending order %s", status, orderID)
+	}
+}
+
+// do sends a request with an optional JSON payload and decodes the JSON
+// response into out, which may be nil when the body is not needed.
+func (p *Purchase) do(ctx context.Context, method, path string, payload, out any) (int, error) {
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return 0, fmt.Errorf("encode request for %s: %w", path, err)
+		}
+		body = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+path, bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, method, p.baseURL+path, body)
 	if err != nil {
 		return 0, fmt.Errorf("build request for %s: %w", path, err)
 	}

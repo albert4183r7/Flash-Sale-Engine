@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/flashsale/api-gateway/client"
+	"github.com/flashsale/common/models"
 	"github.com/google/uuid"
 )
 
@@ -139,5 +140,38 @@ func TestRestoreStockSucceeds(t *testing.T) {
 	}
 	if body.ProductID != productID || body.Qty != 3 {
 		t.Errorf("request body = %+v, want product %s qty 3", body, productID)
+	}
+}
+
+func TestPendingOrder(t *testing.T) {
+	event := models.OrderEvent{OrderID: uuid.New(), UserID: uuid.New(), ProductID: uuid.New(), Qty: 2}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/orders/"+event.OrderID.String()+"/pending" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false}`))
+			return
+		}
+		if r.Header.Get("X-Internal-Token") != internalToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": event})
+	}))
+	defer srv.Close()
+	c := client.NewPurchase(srv.URL, internalToken)
+
+	got, found, err := c.PendingOrder(context.Background(), event.OrderID)
+	if err != nil || !found {
+		t.Fatalf("PendingOrder() = (_, %v, %v), want found", found, err)
+	}
+	if got.OrderID != event.OrderID || got.UserID != event.UserID || got.Qty != 2 {
+		t.Errorf("PendingOrder() = %+v, want %+v", got, event)
+	}
+
+	_, found, err = c.PendingOrder(context.Background(), uuid.New())
+	if err != nil || found {
+		t.Fatalf("PendingOrder() for an unknown order = (_, %v, %v), want not found", found, err)
 	}
 }

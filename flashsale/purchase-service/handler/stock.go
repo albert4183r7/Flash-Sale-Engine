@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/flashsale/common/response"
 	"github.com/flashsale/purchase-service/redis"
+	"github.com/flashsale/purchase-service/warmup"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -13,11 +16,13 @@ import (
 // StockHandler exposes the in-memory stock counters.
 type StockHandler struct {
 	stock *redis.Client
+	load  func(ctx context.Context) (warmup.Result, error)
 }
 
-// NewStockHandler creates a StockHandler.
-func NewStockHandler(stock *redis.Client) *StockHandler {
-	return &StockHandler{stock: stock}
+// NewStockHandler creates a StockHandler. load creates the counters of
+// products that do not have one yet.
+func NewStockHandler(stock *redis.Client, load func(ctx context.Context) (warmup.Result, error)) *StockHandler {
+	return &StockHandler{stock: stock, load: load}
 }
 
 // GetStock handles GET /stock/:id.
@@ -68,4 +73,21 @@ func (h *StockHandler) RestoreStock(c *gin.Context) {
 	}
 
 	response.Success(c, http.StatusOK, "Stock restored", nil)
+}
+
+// LoadStock handles POST /internal/stock/load. It creates counters for products
+// added since the service started, so a new sale can open without a restart.
+// Live counters are left untouched.
+func (h *StockHandler) LoadStock(c *gin.Context) {
+	result, err := h.load(c.Request.Context())
+	if err != nil {
+		log.Printf("load stock counters: %v", err)
+		response.Error(c, http.StatusServiceUnavailable, "Failed to load stock",
+			"Stock could not be loaded from the database")
+		return
+	}
+	response.Success(c, http.StatusOK, "Stock counters loaded", gin.H{
+		"loaded": result.Loaded,
+		"kept":   result.Kept,
+	})
 }

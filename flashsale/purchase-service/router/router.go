@@ -2,11 +2,14 @@
 package router
 
 import (
+	"context"
+
 	"github.com/flashsale/purchase-service/config"
 	"github.com/flashsale/purchase-service/handler"
 	"github.com/flashsale/purchase-service/middleware"
 	"github.com/flashsale/purchase-service/redis"
 	"github.com/flashsale/purchase-service/service"
+	"github.com/flashsale/purchase-service/warmup"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,7 +26,10 @@ func Setup(cfg *config.Config, stock *redis.Client, purchases *service.Purchase)
 	r.GET("/health", health.Health)
 
 	purchaseHandler := handler.NewPurchaseHandler(purchases)
-	stockHandler := handler.NewStockHandler(stock)
+	orderHandler := handler.NewOrderHandler(stock)
+	stockHandler := handler.NewStockHandler(stock, func(ctx context.Context) (warmup.Result, error) {
+		return warmup.LoadStock(ctx, cfg.PostgresURL, stock)
+	})
 
 	// Every route below trusts its caller to have authenticated the buyer, so
 	// all of them sit behind the shared internal token.
@@ -32,6 +38,8 @@ func Setup(cfg *config.Config, stock *redis.Client, purchases *service.Purchase)
 		internal.POST("/purchase", purchaseHandler.Purchase)
 		internal.GET("/stock/:id", stockHandler.GetStock)
 		internal.POST("/internal/stock/restore", stockHandler.RestoreStock)
+		internal.POST("/internal/stock/load", stockHandler.LoadStock)
+		internal.GET("/internal/orders/:id/pending", orderHandler.GetPending)
 	}
 
 	return r

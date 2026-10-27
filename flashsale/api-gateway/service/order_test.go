@@ -76,11 +76,37 @@ func (f *fakeStock) RestoreStock(_ context.Context, productID uuid.UUID, qty int
 	return nil
 }
 
+// fakePending stands in for the purchase service's pending-order lookup.
+type fakePending struct {
+	orders map[uuid.UUID]models.OrderEvent
+	err    error
+}
+
+func newFakePending() *fakePending {
+	return &fakePending{orders: map[uuid.UUID]models.OrderEvent{}}
+}
+
+func (f *fakePending) add(userID uuid.UUID) models.OrderEvent {
+	e := models.OrderEvent{
+		OrderID: uuid.New(), UserID: userID, ProductID: uuid.New(), Qty: 2, Timestamp: time.Now(),
+	}
+	f.orders[e.OrderID] = e
+	return e
+}
+
+func (f *fakePending) PendingOrder(_ context.Context, orderID uuid.UUID) (models.OrderEvent, bool, error) {
+	if f.err != nil {
+		return models.OrderEvent{}, false, f.err
+	}
+	e, ok := f.orders[orderID]
+	return e, ok, nil
+}
+
 func TestGetOrderReturnsOwnOrder(t *testing.T) {
 	owner := uuid.New()
 	orders := newFakeOrders()
 	want := orders.add(owner, models.OrderStatusSuccess, 2)
-	svc := service.NewOrder(orders, newFakeStock())
+	svc := service.NewOrder(orders, newFakeStock(), newFakePending())
 
 	got, err := svc.Get(context.Background(), want.ID, owner)
 	if err != nil {
@@ -97,7 +123,7 @@ func TestGetOrderHidesOtherUsersOrders(t *testing.T) {
 	owner, stranger := uuid.New(), uuid.New()
 	orders := newFakeOrders()
 	order := orders.add(owner, models.OrderStatusSuccess, 2)
-	svc := service.NewOrder(orders, newFakeStock())
+	svc := service.NewOrder(orders, newFakeStock(), newFakePending())
 
 	_, err := svc.Get(context.Background(), order.ID, stranger)
 	if !errors.Is(err, service.ErrOrderNotFound) {
@@ -110,7 +136,7 @@ func TestCancelOrderRestoresStock(t *testing.T) {
 	orders := newFakeOrders()
 	order := orders.add(owner, models.OrderStatusSuccess, 3)
 	stock := newFakeStock()
-	svc := service.NewOrder(orders, stock)
+	svc := service.NewOrder(orders, stock, newFakePending())
 
 	cancelled, err := svc.Cancel(context.Background(), order.ID, owner)
 	if err != nil {
@@ -131,7 +157,7 @@ func TestCancelOrderRefusesOtherUsersOrders(t *testing.T) {
 	orders := newFakeOrders()
 	order := orders.add(owner, models.OrderStatusSuccess, 3)
 	stock := newFakeStock()
-	svc := service.NewOrder(orders, stock)
+	svc := service.NewOrder(orders, stock, newFakePending())
 
 	_, err := svc.Cancel(context.Background(), order.ID, attacker)
 	if !errors.Is(err, service.ErrOrderNotFound) {
@@ -152,7 +178,7 @@ func TestCancelOrderIsNotRepeatable(t *testing.T) {
 	orders := newFakeOrders()
 	order := orders.add(owner, models.OrderStatusSuccess, 4)
 	stock := newFakeStock()
-	svc := service.NewOrder(orders, stock)
+	svc := service.NewOrder(orders, stock, newFakePending())
 
 	if _, err := svc.Cancel(context.Background(), order.ID, owner); err != nil {
 		t.Fatalf("first Cancel() error = %v", err)
@@ -177,7 +203,7 @@ func TestCancelOrderSucceedsWhenStockCacheFails(t *testing.T) {
 	order := orders.add(owner, models.OrderStatusSuccess, 2)
 	stock := newFakeStock()
 	stock.err = errors.New("connection refused")
-	svc := service.NewOrder(orders, stock)
+	svc := service.NewOrder(orders, stock, newFakePending())
 
 	cancelled, err := svc.Cancel(context.Background(), order.ID, owner)
 	if err != nil {
@@ -185,5 +211,70 @@ func TestCancelOrderSucceedsWhenStockCacheFails(t *testing.T) {
 	}
 	if cancelled.Status != models.OrderStatusCancelled {
 		t.Errorf("status = %s, want %s", cancelled.Status, models.OrderStatusCancelled)
+	}
+}
+
+// An order the worker has not stored yet must read as PENDING, not as missing.
+func TestGetOrderReportsPendingOrder(t *testing.T) {
+	owner := uuid.New()
+	pending := newFakePending()
+	event := pending.add(owner)
+	svc := service.NewOrder(newFakeOrders(), newFakeStock(), pending)
+
+	got, err := svc.Get(context.Background(), event.OrderID, owner)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.ID != event.OrderID || got.Status != models.OrderStatusPending || got.Qty != event.Qty {
+		t.Errorf("Get() = %+v, want pending order %s", got, event.OrderID)
+	}
+}
+
+// Ownership applies to pending orders too.
+func TestGetOrderHidesOtherUsersPendingOrders(t *testing.T) {
+	pending := newFakePending()
+	event := pending.add(uuid.New())
+	svc := service.NewOrder(newFakeOrders(), newFakeStock(), pending)
+
+	_, err := svc.Get(context.Background(), event.OrderID, uuid.New())
+	if !errors.Is(err, service.ErrOrderNotFound) {
+		t.Fatalf("Get() error = %v, want ErrOrderNotFound", err)
+	}
+}
+
+// If the purchase service cannot be asked, the order is reported missing, as it
+// would have been without the pending lookup, rather than failing the request.
+func TestGetOrderToleratesPendingLookupFailure(t *testing.T) {
+	pending := newFakePending()
+	pending.err = errors.New("connection refused")
+	svc := service.NewOrder(newFakeOrders(), newFakeStock(), pending)
+
+	_, err := svc.Get(context.Background(), uuid.New(), uuid.New())
+	if !errors.Is(err, service.ErrOrderNotFound) {
+		t.Fatalf("Get() error = %v, want ErrOrderNotFound", err)
+	}
+}
+
+// A pending order holds no durable stock yet, so it cannot be cancelled until
+// the worker has stored it; the buyer is told to retry rather than "not found".
+func TestCancelPendingOrderAsksToRetry(t *testing.T) {
+	owner := uuid.New()
+	pending := newFakePending()
+	event := pending.add(owner)
+	stock := newFakeStock()
+	svc := service.NewOrder(newFakeOrders(), stock, pending)
+
+	_, err := svc.Cancel(context.Background(), event.OrderID, owner)
+	if !errors.Is(err, service.ErrOrderPending) {
+		t.Fatalf("Cancel() error = %v, want ErrOrderPending", err)
+	}
+	if len(stock.restored) != 0 {
+		t.Error("stock was restored for an order that was never cancelled")
+	}
+
+	// Another buyer still sees it as missing.
+	_, err = svc.Cancel(context.Background(), event.OrderID, uuid.New())
+	if !errors.Is(err, service.ErrOrderNotFound) {
+		t.Fatalf("Cancel() by a stranger: error = %v, want ErrOrderNotFound", err)
 	}
 }

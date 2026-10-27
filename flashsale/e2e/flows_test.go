@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -147,24 +148,147 @@ func TestOrdersArePrivateToTheirOwner(t *testing.T) {
 	})
 }
 
-// Resubmitting the same order within the idempotency window is refused, and
-// does not consume stock a second time.
-func TestDuplicatePurchaseIsRefused(t *testing.T) {
+// Resubmitting the same order within the idempotency window returns the
+// original order, as a client retrying after a lost response needs, and does
+// not consume stock a second time.
+func TestDuplicatePurchaseReturnsTheSameOrder(t *testing.T) {
 	token, _ := newAccount(t)
 	product := newProduct(t, 10)
 
-	if status, _ := buy(t, token, product, 1); status != http.StatusAccepted {
+	status, orderID := buy(t, token, product, 1)
+	if status != http.StatusAccepted {
 		t.Fatalf("first purchase status = %d, want %d", status, http.StatusAccepted)
 	}
 
-	status, _ := call(t, http.MethodPost, "/purchase", token, map[string]any{
+	status, body := call(t, http.MethodPost, "/purchase", token, map[string]any{
 		"product_id": product, "qty": 1,
 	})
-	if status != http.StatusConflict {
-		t.Fatalf("duplicate purchase status = %d, want %d", status, http.StatusConflict)
+	if status != http.StatusOK {
+		t.Fatalf("duplicate purchase status = %d, want %d", status, http.StatusOK)
+	}
+	if got := decodeOrderID(t, body.Data); got != orderID {
+		t.Errorf("duplicate purchase returned order %s, want the original %s", got, orderID)
 	}
 	if got := redisStock(t, product); got != 9 {
 		t.Errorf("stock counter = %d, want 9: the duplicate consumed stock", got)
+	}
+
+	waitForOrderStatus(t, orderID, "SUCCESS")
+	var orders int
+	env.db.QueryRow(`SELECT count(*) FROM orders WHERE product_id = $1`, product).Scan(&orders)
+	if orders != 1 {
+		t.Errorf("%d orders were stored, want 1", orders)
+	}
+}
+
+// Until the worker stores an order, the buyer still sees it, as PENDING, and is
+// asked to retry a cancellation rather than told the order does not exist.
+func TestPendingOrderIsVisibleBeforeItIsStored(t *testing.T) {
+	token, userID := newAccount(t)
+	strangerToken, _ := newAccount(t)
+
+	// Stand in for an order the worker has not reached yet, by writing the
+	// pending copy the purchase service keeps.
+	orderID := uuid.New()
+	event, _ := json.Marshal(map[string]any{
+		"order_id": orderID, "user_id": userID, "product_id": uuid.New(), "qty": 2,
+		"timestamp": time.Now().UTC(),
+	})
+	key := "order:pending:" + orderID.String()
+	if err := env.redis.Set(context.Background(), key, event, time.Minute).Err(); err != nil {
+		t.Fatalf("write pending order: %v", err)
+	}
+	t.Cleanup(func() { env.redis.Del(context.Background(), key) })
+
+	status, body := call(t, http.MethodGet, "/orders/"+orderID.String(), token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get pending order status = %d, want %d", status, http.StatusOK)
+	}
+	var order struct {
+		Status string `json:"status"`
+		Qty    int    `json:"qty"`
+	}
+	if err := json.Unmarshal(body.Data, &order); err != nil {
+		t.Fatalf("decode order: %v", err)
+	}
+	if order.Status != "PENDING" || order.Qty != 2 {
+		t.Errorf("order = %+v, want PENDING with qty 2", order)
+	}
+
+	if status, _ := call(t, http.MethodDelete, "/orders/"+orderID.String(), token, nil); status != http.StatusConflict {
+		t.Errorf("cancel pending order status = %d, want %d", status, http.StatusConflict)
+	}
+
+	// Another buyer must not see it at all.
+	if status, _ := call(t, http.MethodGet, "/orders/"+orderID.String(), strangerToken, nil); status != http.StatusNotFound {
+		t.Errorf("stranger reading a pending order: status = %d, want %d", status, http.StatusNotFound)
+	}
+}
+
+// An order whose request died after reserving stock but before publishing
+// stays in the outbox, and the relay must still deliver it to the worker.
+func TestOutboxRelayDeliversInterruptedOrder(t *testing.T) {
+	_, userID := newAccount(t)
+	product := newProduct(t, 10)
+	ctx := context.Background()
+
+	// Reproduce the state a crash leaves behind: stock taken and the event in
+	// the outbox, but nothing published.
+	orderID := uuid.New()
+	event, _ := json.Marshal(map[string]any{
+		"order_id": orderID, "user_id": userID, "product_id": product, "qty": 3,
+		"timestamp": time.Now().UTC().Add(-time.Minute),
+	})
+	if err := env.redis.DecrBy(ctx, "product_stock:"+product.String(), 3).Err(); err != nil {
+		t.Fatalf("reserve stock: %v", err)
+	}
+	if err := env.redis.HSet(ctx, "orders:outbox", orderID.String(), event).Err(); err != nil {
+		t.Fatalf("write outbox entry: %v", err)
+	}
+	t.Cleanup(func() { env.redis.HDel(context.Background(), "orders:outbox", orderID.String()) })
+
+	waitForOrderStatus(t, orderID, "SUCCESS")
+	if got := dbStock(t, product); got != 7 {
+		t.Errorf("durable stock = %d, want 7", got)
+	}
+	if exists, _ := env.redis.HExists(ctx, "orders:outbox", orderID.String()).Result(); exists {
+		t.Error("the delivered event was left in the outbox")
+	}
+}
+
+// Loading stock picks up products added after startup, and never overwrites a
+// live counter, which already accounts for orders still on their way to the
+// database.
+func TestStockLoadKeepsLiveCounters(t *testing.T) {
+	ctx := context.Background()
+
+	var product uuid.UUID
+	err := env.db.QueryRow(
+		`INSERT INTO products (name, price, stock) VALUES ($1, 100, 10) RETURNING id`,
+		"e2e-product-"+uuid.NewString()).Scan(&product)
+	if err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+	key := "product_stock:" + product.String()
+	t.Cleanup(func() {
+		env.db.Exec(`DELETE FROM products WHERE id = $1`, product)
+		env.redis.Del(context.Background(), key)
+	})
+
+	if status := callPurchaseService(t, http.MethodPost, "/internal/stock/load", internalToken, nil); status != http.StatusOK {
+		t.Fatalf("load status = %d, want %d", status, http.StatusOK)
+	}
+	if got := redisStock(t, product); got != 10 {
+		t.Fatalf("stock counter = %d after load, want 10", got)
+	}
+
+	// Simulate sales the database has not caught up with, then load again.
+	env.redis.Set(ctx, key, 3, 0)
+	if status := callPurchaseService(t, http.MethodPost, "/internal/stock/load", internalToken, nil); status != http.StatusOK {
+		t.Fatalf("second load status = %d, want %d", status, http.StatusOK)
+	}
+	if got := redisStock(t, product); got != 3 {
+		t.Errorf("stock counter = %d after reload, want 3: a live counter was overwritten", got)
 	}
 }
 
@@ -261,6 +385,8 @@ func TestPurchaseServiceRejectsUntrustedCallers(t *testing.T) {
 			"product_id": product, "qty": 999999,
 		}},
 		{"read stock", http.MethodGet, "/stock/" + product.String(), nil},
+		{"load stock", http.MethodPost, "/internal/stock/load", nil},
+		{"read pending order", http.MethodGet, "/internal/orders/" + uuid.NewString() + "/pending", nil},
 	}
 
 	for _, tt := range requests {

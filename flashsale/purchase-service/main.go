@@ -64,13 +64,17 @@ func run() error {
 	defer events.Close()
 
 	warmCtx, cancelWarm := context.WithTimeout(ctx, 30*time.Second)
-	err = warmup.LoadStock(warmCtx, cfg.PostgresURL, stockStore)
+	_, err = warmup.LoadStock(warmCtx, cfg.PostgresURL, stockStore)
 	cancelWarm()
 	if err != nil {
 		return err
 	}
 
-	purchases := service.NewPurchase(stockStore, events, cfg.IdempotencyTTL)
+	purchases := service.NewPurchase(stockStore, events, service.TTLs{
+		Idempotency:  cfg.IdempotencyTTL,
+		PendingOrder: cfg.PendingOrderTTL,
+	})
+	go relayOutbox(ctx, purchases, cfg.OutboxRelayInterval, cfg.OutboxRetryAfter)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -98,4 +102,27 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// relayOutbox periodically publishes order events whose original publish was
+// interrupted, until ctx is cancelled. Without it, an order reserved by a
+// request that crashed before publishing would hold its stock forever.
+func relayOutbox(ctx context.Context, purchases *service.Purchase, interval, retryAfter time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			published, err := purchases.RepublishStale(ctx, retryAfter)
+			if published > 0 {
+				log.Printf("outbox relay republished %d order event(s)", published)
+			}
+			if err != nil {
+				log.Printf("outbox relay: %v", err)
+			}
+		}
+	}
 }

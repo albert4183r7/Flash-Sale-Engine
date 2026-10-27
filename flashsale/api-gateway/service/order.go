@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/flashsale/api-gateway/repository"
@@ -9,10 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// Order lookup failures, re-exported so handlers depend only on this package.
+// Order lookup failures. The repository's are re-exported so handlers depend
+// only on this package.
 var (
 	ErrOrderNotFound       = repository.ErrOrderNotFound
 	ErrOrderNotCancellable = repository.ErrOrderNotCancellable
+	// ErrOrderPending means the order was accepted but the worker has not
+	// stored it yet, so it cannot be cancelled until it has.
+	ErrOrderPending = errors.New("order is still being processed")
 )
 
 // OrderStore is the order storage the order logic needs.
@@ -26,20 +31,63 @@ type StockRestorer interface {
 	RestoreStock(ctx context.Context, productID uuid.UUID, qty int) error
 }
 
+// PendingOrders reads orders that are accepted but not yet stored.
+type PendingOrders interface {
+	PendingOrder(ctx context.Context, orderID uuid.UUID) (models.OrderEvent, bool, error)
+}
+
 // Order serves order lookups and cancellations.
 type Order struct {
-	orders OrderStore
-	stock  StockRestorer
+	orders  OrderStore
+	stock   StockRestorer
+	pending PendingOrders
 }
 
 // NewOrder creates an Order service.
-func NewOrder(orders OrderStore, stock StockRestorer) *Order {
-	return &Order{orders: orders, stock: stock}
+func NewOrder(orders OrderStore, stock StockRestorer, pending PendingOrders) *Order {
+	return &Order{orders: orders, stock: stock, pending: pending}
 }
 
 // Get returns the caller's own order, or ErrOrderNotFound.
+//
+// An order reaches PostgreSQL only once the worker has stored it, a moment
+// after the purchase is accepted. Until then it is read from the purchase
+// service and reported as PENDING, so a buyer checking straight after buying
+// does not see their order as missing.
 func (o *Order) Get(ctx context.Context, orderID, userID uuid.UUID) (models.Order, error) {
-	return o.orders.FindByIDForUser(ctx, orderID, userID)
+	order, err := o.orders.FindByIDForUser(ctx, orderID, userID)
+	if !errors.Is(err, ErrOrderNotFound) {
+		return order, err
+	}
+
+	event, ok := o.pendingFor(ctx, orderID, userID)
+	if !ok {
+		return models.Order{}, ErrOrderNotFound
+	}
+	return models.Order{
+		ID:        event.OrderID,
+		UserID:    event.UserID,
+		ProductID: event.ProductID,
+		Qty:       event.Qty,
+		Status:    models.OrderStatusPending,
+		CreatedAt: event.Timestamp,
+	}, nil
+}
+
+// pendingFor returns the caller's own pending order, if there is one. A lookup
+// failure is logged and treated as no pending order: the order is then simply
+// reported missing, as it was before pending orders were readable.
+func (o *Order) pendingFor(ctx context.Context, orderID, userID uuid.UUID) (models.OrderEvent, bool) {
+	event, found, err := o.pending.PendingOrder(ctx, orderID)
+	if err != nil {
+		log.Printf("pending order lookup for %s failed: %v", orderID, err)
+		return models.OrderEvent{}, false
+	}
+	// Another buyer's order must look exactly like a missing one.
+	if !found || event.UserID != userID {
+		return models.OrderEvent{}, false
+	}
+	return event, true
 }
 
 // Cancel cancels the caller's own order and returns its stock.
@@ -51,6 +99,11 @@ func (o *Order) Get(ctx context.Context, orderID, userID uuid.UUID) (models.Orde
 // flash sale would oversell.
 func (o *Order) Cancel(ctx context.Context, orderID, userID uuid.UUID) (models.Order, error) {
 	cancelled, err := o.orders.CancelForUser(ctx, orderID, userID)
+	if errors.Is(err, ErrOrderNotFound) {
+		if _, pending := o.pendingFor(ctx, orderID, userID); pending {
+			return models.Order{}, ErrOrderPending
+		}
+	}
 	if err != nil {
 		return models.Order{}, err
 	}
