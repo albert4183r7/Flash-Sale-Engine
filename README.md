@@ -160,7 +160,7 @@ for reconciliation.
 | **PostgreSQL 17** | Persistent storage |
 | **JWT (HS256)** | Stateless authentication |
 | **Docker Compose** | Local orchestration |
-| **GitHub Actions** | CI: lint, tests, Docker builds |
+| **GitHub Actions** | CI (lint, tests, Docker builds) and CD (publish images to GHCR) |
 
 ## 📡 API Endpoints
 
@@ -394,8 +394,23 @@ the suite checks:
 | 🔑 Auth | Bad credentials rejected; duplicate and weak signups rejected |
 | 📨 Worker | Redelivered messages ignored; bad messages discarded; transient DB failures retried |
 
-CI (`.github/workflows/ci.yml`) runs formatting, `go vet`, `golangci-lint`, all
-tests with `-race`, and the Docker image builds on every push and pull request.
+## 🚀 CI/CD
+
+| Workflow | Runs when | What it does |
+| :--- | :--- | :--- |
+| **CI** (`.github/workflows/ci.yml`) | Every push and pull request to `main` or `dev` | `gofmt`, `go vet`, `golangci-lint`, all tests with `-race` (against real PostgreSQL, Redis and RabbitMQ), and a build of the three Docker images |
+| **CD** (`.github/workflows/cd.yml`) | After CI passes on `main`, or by hand from the Actions tab | Builds the three service images from the commit CI tested and publishes them to **GitHub Container Registry**, tagged `sha-<commit>` and `latest` |
+
+Published images:
+
+```bash
+docker pull ghcr.io/albert4183r7/flash-sale-api-gateway:latest
+docker pull ghcr.io/albert4183r7/flash-sale-purchase-service:latest
+docker pull ghcr.io/albert4183r7/flash-sale-order-worker:latest
+```
+
+> New GHCR packages are private by default. To let anyone pull them, open each
+> package under the repository's **Packages** and set its visibility to public.
 
 ## 💾 Database Schema
 

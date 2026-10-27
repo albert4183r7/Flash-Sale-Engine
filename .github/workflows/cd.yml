@@ -1,0 +1,61 @@
+name: Flash Sale CD
+
+# Publishes the three service images to GitHub Container Registry once CI has
+# passed on main, so only code that built, linted and tested cleanly is ever
+# published. It can also be started by hand from the Actions tab.
+on:
+  workflow_run:
+    workflows: ["Flash Sale CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.service }}
+    # A workflow_run fires for failed CI runs too; publish only green ones.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, purchase-service, order-worker]
+
+    steps:
+      # Build exactly the commit CI tested, not whatever main points to now.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags each image with the short commit SHA, so any deployed version can
+      # be traced to its source, and with "latest" for convenience.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/flash-sale-${{ matrix.service }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          # The build context is flashsale/, because every service needs the
+          # shared common module next to it.
+          context: ./flashsale
+          file: ./flashsale/deployments/Dockerfile.${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
