@@ -5,70 +5,59 @@ import (
 
 	"github.com/flashsale/api-gateway/client"
 	"github.com/flashsale/api-gateway/dto"
+	"github.com/flashsale/api-gateway/middleware"
+	"github.com/flashsale/common/models"
+	"github.com/flashsale/common/response"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
-// PurchaseHandler handles purchase requests
+// PurchaseHandler forwards purchases to the purchase service.
 type PurchaseHandler struct {
-	purchaseClient *client.PurchaseClient
+	purchases *client.Purchase
 }
 
-// NewPurchaseHandler creates a new PurchaseHandler
-func NewPurchaseHandler(purchaseClient *client.PurchaseClient) *PurchaseHandler {
-	return &PurchaseHandler{purchaseClient: purchaseClient}
+// NewPurchaseHandler creates a PurchaseHandler.
+func NewPurchaseHandler(purchases *client.Purchase) *PurchaseHandler {
+	return &PurchaseHandler{purchases: purchases}
 }
 
-// Purchase handles a purchase request
+// Purchase handles POST /purchase.
 func (h *PurchaseHandler) Purchase(c *gin.Context) {
 	var req dto.PurchaseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request",
-			"error":   err.Error(),
-		})
+		response.Error(c, http.StatusBadRequest, "Invalid request", err.Error())
 		return
 	}
 
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "User not authenticated",
-			"error":   "User ID not found in token",
-		})
+	// The buyer comes from the verified token, so a client cannot order on
+	// somebody else's behalf by putting their ID in the body.
+	userID, ok := middleware.UserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, "User not authenticated",
+			"No authenticated user on this request")
 		return
 	}
 
-	resp, err := h.purchaseClient.Purchase(userID.(uuid.UUID), req.ProductID, req.Qty)
+	result, err := h.purchases.Create(c.Request.Context(), userID, req.ProductID, req.Qty)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"success": false,
-			"message": "Purchase service unavailable",
-			"error":   err.Error(),
-		})
+		response.Error(c, http.StatusServiceUnavailable, "Purchase service unavailable",
+			"The purchase service could not be reached")
 		return
 	}
 
-	if !resp.Success {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": resp.Message,
-			"error":   resp.Error,
-		})
+	if !result.Success {
+		// Pass the purchase service's own status through, so a sold-out product
+		// stays a 409 and an unknown product stays a 404 instead of every
+		// refusal collapsing into one code.
+		response.Error(c, result.Status, result.Message, result.Error)
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{
-		"success": true,
-		"message": resp.Message,
-		"data": dto.PurchaseResponse{
-			OrderID:   resp.OrderID,
-			Status:    "PENDING",
-			Message:   "Your order is being processed",
+	response.Success(c, http.StatusAccepted, "Purchase accepted and queued for processing",
+		dto.PurchaseResponse{
+			OrderID:   result.OrderID,
+			Status:    models.OrderStatusPending,
 			ProductID: req.ProductID,
 			Qty:       req.Qty,
-		},
-	})
+		})
 }

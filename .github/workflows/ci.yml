@@ -1,22 +1,71 @@
-name: Flash Sale CI/CD
+name: Flash Sale CI
 
 on:
   push:
-    branches: [ main, dev ]
-    paths:
-      - 'flashsale/**'
+    branches: [main, dev]
   pull_request:
-    branches: [ main ]
+    branches: [main, dev]
+
+env:
+  GO_VERSION: "1.23"
 
 jobs:
-  test:
-    name: Integration Test
+  static:
+    name: Format, vet and lint
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: flashsale/*/go.sum
+
+      - name: Check formatting
+        working-directory: ./flashsale
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build and vet every module
+        working-directory: ./flashsale
+        run: |
+          for module in common api-gateway purchase-service order-worker scripts e2e; do
+            echo "::group::$module"
+            (cd "$module" && go build ./... && go vet ./...)
+            echo "::endgroup::"
+          done
+
+      # golangci-lint runs per module, so it is installed once and looped over
+      # every module rather than using the action, which handles only one
+      # working directory per invocation.
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+
+      - name: Lint every module
+        working-directory: ./flashsale
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          for module in common api-gateway purchase-service order-worker scripts e2e; do
+            echo "::group::$module"
+            (cd "$module" && golangci-lint run --config ../.golangci.yml ./...)
+            echo "::endgroup::"
+          done
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -25,9 +74,7 @@ jobs:
 
       rabbitmq:
         image: rabbitmq:3-management-alpine
-        ports:
-          - 5672:5672
-          - 15672:15672
+        ports: ["5672:5672"]
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s
@@ -35,47 +82,74 @@ jobs:
           --health-retries 5
 
       postgres:
-        image: postgres:17-alpine 
+        image: postgres:17-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: flashsale
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
+    # Every module sees the same infrastructure. The integration and end-to-end
+    # tests skip themselves when these are unset, so the suite still runs
+    # locally without any of it.
+    env:
+      POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
+      REDIS_ADDR: localhost:6379
+      RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+      JWT_SECRET: ci-jwt-secret-at-least-16-chars
+      INTERNAL_API_TOKEN: ci-internal-service-token
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: flashsale/*/go.sum
 
-      - name: Test API Gateway
+      - name: Apply database schema
+        run: psql "$POSTGRES_URL" -f flashsale/migrations/init.sql
+
+      # -race is on everywhere: the stock counters, the publisher channel and
+      # the rate limiter are all shared state under concurrent load.
+      #
+      # Note there is no "|| true" here. A failing test must fail the build.
+      - name: Test shared module
+        working-directory: ./flashsale/common
+        run: go test -race -count=1 ./...
+
+      - name: Test API gateway
         working-directory: ./flashsale/api-gateway
-        run: go test -v ./... || echo "No tests found"
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
-          REDIS_ADDR: localhost:6379
+        run: go test -race -count=1 ./...
 
-      - name: Test Purchase Service
+      - name: Test purchase service
         working-directory: ./flashsale/purchase-service
-        run: go test -v ./... || echo "No tests found"
-        env:
-          REDIS_ADDR: localhost:6379
-          RABBITMQ_URL: amqp://guest:guest@localhost:5672/
-          POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
+        run: go test -race -count=1 ./...
 
-      - name: Test Order Worker
+      - name: Test order worker
         working-directory: ./flashsale/order-worker
-        run: go test -v ./... || echo "No tests found"
-        env:
-          RABBITMQ_URL: amqp://guest:guest@localhost:5672/
-          POSTGRES_URL: postgres://postgres:postgres@localhost:5432/flashsale?sslmode=disable
+        run: go test -race -count=1 ./...
+
+      - name: End-to-end tests
+        working-directory: ./flashsale/e2e
+        run: go test -count=1 -timeout 10m ./...
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build service images
+        working-directory: ./flashsale
+        run: |
+          for service in api-gateway purchase-service order-worker; do
+            echo "::group::$service"
+            docker build -f "deployments/Dockerfile.$service" -t "flashsale/$service:ci" .
+            echo "::endgroup::"
+          done
