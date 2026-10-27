@@ -20,10 +20,20 @@ type Config struct {
 	// The purchase service trusts the user ID in its request bodies, so those
 	// routes must never be reachable by an untrusted caller.
 	InternalToken string
-	// IdempotencyTTL is how long a buyer's claim on a product is held, which
-	// bounds how quickly the same order can be submitted twice.
-	IdempotencyTTL  time.Duration
-	ShutdownTimeout time.Duration
+	// IdempotencyTTL is how long a buyer's claim on a product is held. Within
+	// it, resubmitting the purchase returns the original order.
+	IdempotencyTTL time.Duration
+	// PendingOrderTTL is how long an accepted order stays readable from Redis
+	// while it waits for the worker to store it.
+	PendingOrderTTL time.Duration
+	// OutboxRelayInterval is how often the outbox is checked for events whose
+	// publish was interrupted.
+	OutboxRelayInterval time.Duration
+	// OutboxRetryAfter is how old an outbox event must be before the relay
+	// publishes it again. It must comfortably exceed the publisher's confirm
+	// timeout, so a request still waiting on the broker is not raced.
+	OutboxRetryAfter time.Duration
+	ShutdownTimeout  time.Duration
 }
 
 // Load reads configuration from the environment and validates it.
@@ -47,6 +57,15 @@ func Load() (*Config, error) {
 	idempotencyTTL, err := env.Duration("IDEMPOTENCY_TTL", 2*time.Minute)
 	errs = append(errs, err)
 
+	pendingOrderTTL, err := env.Duration("PENDING_ORDER_TTL", 15*time.Minute)
+	errs = append(errs, err)
+
+	relayInterval, err := env.Duration("OUTBOX_RELAY_INTERVAL", 10*time.Second)
+	errs = append(errs, err)
+
+	retryAfter, err := env.Duration("OUTBOX_RETRY_AFTER", 30*time.Second)
+	errs = append(errs, err)
+
 	shutdownTimeout, err := env.Duration("SHUTDOWN_TIMEOUT", 15*time.Second)
 	errs = append(errs, err)
 
@@ -55,13 +74,16 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Port:            env.Get("PURCHASE_SERVICE_PORT", "8081"),
-		RedisAddr:       redisAddr,
-		RedisPassword:   env.Get("REDIS_PASSWORD", ""),
-		RabbitMQURL:     rabbitURL,
-		PostgresURL:     postgresURL,
-		InternalToken:   internalToken,
-		IdempotencyTTL:  idempotencyTTL,
-		ShutdownTimeout: shutdownTimeout,
+		Port:                env.Get("PURCHASE_SERVICE_PORT", "8081"),
+		RedisAddr:           redisAddr,
+		RedisPassword:       env.Get("REDIS_PASSWORD", ""),
+		RabbitMQURL:         rabbitURL,
+		PostgresURL:         postgresURL,
+		InternalToken:       internalToken,
+		IdempotencyTTL:      idempotencyTTL,
+		PendingOrderTTL:     pendingOrderTTL,
+		OutboxRelayInterval: relayInterval,
+		OutboxRetryAfter:    retryAfter,
+		ShutdownTimeout:     shutdownTimeout,
 	}, nil
 }

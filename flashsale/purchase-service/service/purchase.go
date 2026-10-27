@@ -16,23 +16,19 @@ import (
 
 // Errors a purchase can fail with. Callers map these to HTTP status codes.
 var (
-	// ErrDuplicatePurchase means the buyer already has a claim on this product
-	// within the idempotency window.
-	ErrDuplicatePurchase = errors.New("duplicate purchase request")
 	// ErrOutOfStock means the remaining stock cannot cover the request.
 	ErrOutOfStock = errors.New("product is out of stock")
 	// ErrProductUnknown means the product has no stock counter.
 	ErrProductUnknown = errors.New("product not found")
 )
 
-// StockStore is the stock and idempotency backend the purchase logic needs.
-// Defining it here, where it is consumed, keeps the service testable without a
-// live Redis.
+// StockStore is the reservation backend the purchase logic needs. Defining it
+// here, where it is consumed, keeps the service testable without a live Redis.
 type StockStore interface {
-	ClaimPurchase(ctx context.Context, userID, productID uuid.UUID, ttl time.Duration) (bool, error)
-	ReleasePurchaseClaim(ctx context.Context, userID, productID uuid.UUID) error
-	DecrementStock(ctx context.Context, productID uuid.UUID, qty int) (int64, error)
-	IncrementStock(ctx context.Context, productID uuid.UUID, qty int) error
+	Reserve(ctx context.Context, r redis.Reservation) (redis.Reserved, error)
+	Release(ctx context.Context, event models.OrderEvent) (bool, error)
+	MarkPublished(ctx context.Context, orderID uuid.UUID) error
+	StaleOutbox(ctx context.Context, olderThan time.Duration) ([]models.OrderEvent, error)
 }
 
 // EventPublisher hands an accepted order to the asynchronous pipeline.
@@ -40,93 +36,123 @@ type EventPublisher interface {
 	PublishOrderCreated(event models.OrderEvent) error
 }
 
+// TTLs controls how long a reservation's Redis state lives.
+type TTLs struct {
+	// Idempotency is how long a buyer's claim on a product is held: within it,
+	// a resubmitted purchase returns the original order.
+	Idempotency time.Duration
+	// PendingOrder is how long an accepted order stays readable before the
+	// worker has stored it.
+	PendingOrder time.Duration
+}
+
 // Purchase reserves stock and publishes order events.
 type Purchase struct {
-	stock          StockStore
-	publisher      EventPublisher
-	idempotencyTTL time.Duration
+	stock     StockStore
+	publisher EventPublisher
+	ttls      TTLs
 }
 
 // NewPurchase creates a Purchase service.
-func NewPurchase(stock StockStore, publisher EventPublisher, idempotencyTTL time.Duration) *Purchase {
-	return &Purchase{stock: stock, publisher: publisher, idempotencyTTL: idempotencyTTL}
+func NewPurchase(stock StockStore, publisher EventPublisher, ttls TTLs) *Purchase {
+	return &Purchase{stock: stock, publisher: publisher, ttls: ttls}
 }
 
-// Process reserves stock for the buyer and queues the order, returning the ID
-// assigned to it.
+// Placement is the outcome of an accepted purchase.
+type Placement struct {
+	OrderID uuid.UUID
+	// Duplicate reports that the buyer had already ordered this product within
+	// the idempotency window. OrderID is then that earlier order, and nothing
+	// new was reserved.
+	Duplicate bool
+}
+
+// Process reserves stock for the buyer and queues the order.
 //
-// Reserving stock and publishing the event are two separate systems, so every
-// failure after a successful reservation compensates by returning the stock and
-// releasing the buyer's claim. Without that, a failed publish would burn
-// inventory that no order will ever consume.
-func (p *Purchase) Process(ctx context.Context, userID, productID uuid.UUID, qty int) (uuid.UUID, error) {
+// The reservation, the idempotency claim and the outbox entry are written in
+// one atomic step, so the order event exists in Redis before any attempt to
+// publish it. If the publish fails, the reservation is released. If this
+// process dies before it can do either, the event stays in the outbox and
+// RepublishStale sends it later, so reserved stock is never stranded.
+func (p *Purchase) Process(ctx context.Context, userID, productID uuid.UUID, qty int) (Placement, error) {
 	if qty <= 0 {
-		return uuid.Nil, fmt.Errorf("qty must be greater than zero, got %d", qty)
+		return Placement{}, fmt.Errorf("qty must be greater than zero, got %d", qty)
 	}
 
-	claimed, err := p.stock.ClaimPurchase(ctx, userID, productID, p.idempotencyTTL)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("claim purchase: %w", err)
-	}
-	if !claimed {
-		return uuid.Nil, ErrDuplicatePurchase
-	}
-
-	remaining, err := p.stock.DecrementStock(ctx, productID, qty)
-	if err != nil {
-		// The claim is only meaningful alongside a reservation. Release it so a
-		// buyer who hit an out-of-stock product is not locked out of retrying.
-		p.releaseClaim(ctx, userID, productID)
-		return uuid.Nil, translateStockError(err)
-	}
-
-	orderID := uuid.New()
 	event := models.OrderEvent{
-		OrderID:   orderID,
+		OrderID:   uuid.New(),
 		UserID:    userID,
 		ProductID: productID,
 		Qty:       qty,
 		Timestamp: time.Now().UTC(),
 	}
 
-	if err := p.publisher.PublishOrderCreated(event); err != nil {
-		p.compensate(ctx, userID, productID, qty)
-		return uuid.Nil, fmt.Errorf("queue order %s: %w", orderID, err)
-	}
-
-	log.Printf("order %s accepted for product %s, %d remaining", orderID, productID, remaining)
-	return orderID, nil
-}
-
-// compensate returns reserved stock and releases the buyer's claim after the
-// order could not be queued.
-func (p *Purchase) compensate(ctx context.Context, userID, productID uuid.UUID, qty int) {
-	if err := p.stock.IncrementStock(ctx, productID, qty); err != nil {
-		// Log loudly: the reserved units are now unsellable until reconciled.
-		log.Printf("CRITICAL: failed to return %d units of product %s after a failed publish: %v",
-			qty, productID, err)
-	}
-	p.releaseClaim(ctx, userID, productID)
-}
-
-func (p *Purchase) releaseClaim(ctx context.Context, userID, productID uuid.UUID) {
-	if err := p.stock.ReleasePurchaseClaim(ctx, userID, productID); err != nil {
-		log.Printf("failed to release purchase claim for user %s on product %s: %v",
-			userID, productID, err)
-	}
-}
-
-// translateStockError converts storage-level failures into the service's own
-// error vocabulary, so HTTP handlers depend only on this package. Both the
-// service sentinels and the Redis ones are accepted, which lets tests supply a
-// fake StockStore that speaks the service's vocabulary directly.
-func translateStockError(err error) error {
+	reserved, err := p.stock.Reserve(ctx, redis.Reservation{
+		Event:      event,
+		ClaimTTL:   p.ttls.Idempotency,
+		PendingTTL: p.ttls.PendingOrder,
+	})
 	switch {
-	case errors.Is(err, ErrOutOfStock), errors.Is(err, redis.ErrOutOfStock):
-		return ErrOutOfStock
-	case errors.Is(err, ErrProductUnknown), errors.Is(err, redis.ErrProductUnknown):
-		return ErrProductUnknown
-	default:
-		return fmt.Errorf("reserve stock: %w", err)
+	case errors.Is(err, redis.ErrOutOfStock):
+		return Placement{}, ErrOutOfStock
+	case errors.Is(err, redis.ErrProductUnknown):
+		return Placement{}, ErrProductUnknown
+	case err != nil:
+		return Placement{}, err
+	case reserved.Duplicate:
+		return Placement{OrderID: reserved.OrderID, Duplicate: true}, nil
+	}
+
+	if err := p.publisher.PublishOrderCreated(event); err != nil {
+		p.release(ctx, event)
+		return Placement{}, fmt.Errorf("queue order %s: %w", event.OrderID, err)
+	}
+	p.markPublished(ctx, event.OrderID)
+
+	log.Printf("order %s accepted for product %s, %d remaining", event.OrderID, productID, reserved.Remaining)
+	return Placement{OrderID: event.OrderID}, nil
+}
+
+// RepublishStale publishes outbox events older than olderThan, which are events
+// whose original request never confirmed them. olderThan must comfortably
+// exceed the publisher's confirm timeout, so a request still waiting on the
+// broker is not raced. A republished event may reach the worker twice; the
+// worker stores each order ID once, so that is harmless. It returns how many
+// events were published.
+func (p *Purchase) RepublishStale(ctx context.Context, olderThan time.Duration) (int, error) {
+	stale, err := p.stock.StaleOutbox(ctx, olderThan)
+	if err != nil {
+		return 0, err
+	}
+
+	var published int
+	for _, event := range stale {
+		if err := p.publisher.PublishOrderCreated(event); err != nil {
+			// The broker is unavailable; the remaining events will be retried
+			// on the next run.
+			return published, fmt.Errorf("republish order %s: %w", event.OrderID, err)
+		}
+		p.markPublished(ctx, event.OrderID)
+		published++
+	}
+	return published, nil
+}
+
+// release returns the stock and drops the claim of an order that could not be
+// queued.
+func (p *Purchase) release(ctx context.Context, event models.OrderEvent) {
+	if _, err := p.stock.Release(ctx, event); err != nil {
+		// The event is still in the outbox, so the relay will publish it and
+		// the order will go through after all; nothing is lost.
+		log.Printf("failed to release order %s after a failed publish, leaving it to the outbox relay: %v",
+			event.OrderID, err)
+	}
+}
+
+// markPublished takes a confirmed event out of the outbox.
+func (p *Purchase) markPublished(ctx context.Context, orderID uuid.UUID) {
+	if err := p.stock.MarkPublished(ctx, orderID); err != nil {
+		// The relay will publish it again, which the worker ignores.
+		log.Printf("failed to clear order %s from the outbox: %v", orderID, err)
 	}
 }

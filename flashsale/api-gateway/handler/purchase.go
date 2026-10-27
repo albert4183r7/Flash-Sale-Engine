@@ -6,6 +6,7 @@ import (
 	"github.com/flashsale/api-gateway/client"
 	"github.com/flashsale/api-gateway/dto"
 	"github.com/flashsale/api-gateway/middleware"
+	"github.com/flashsale/api-gateway/service"
 	"github.com/flashsale/common/models"
 	"github.com/flashsale/common/response"
 	"github.com/gin-gonic/gin"
@@ -14,11 +15,13 @@ import (
 // PurchaseHandler forwards purchases to the purchase service.
 type PurchaseHandler struct {
 	purchases *client.Purchase
+	orders    *service.Order
 }
 
-// NewPurchaseHandler creates a PurchaseHandler.
-func NewPurchaseHandler(purchases *client.Purchase) *PurchaseHandler {
-	return &PurchaseHandler{purchases: purchases}
+// NewPurchaseHandler creates a PurchaseHandler. orders is used to report the
+// current status of an order returned for a repeated purchase.
+func NewPurchaseHandler(purchases *client.Purchase, orders *service.Order) *PurchaseHandler {
+	return &PurchaseHandler{purchases: purchases, orders: orders}
 }
 
 // Purchase handles POST /purchase.
@@ -50,6 +53,23 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		// stays a 409 and an unknown product stays a 404 instead of every
 		// refusal collapsing into one code.
 		response.Error(c, result.Status, result.Message, result.Error)
+		return
+	}
+
+	if result.Status == http.StatusOK {
+		// The buyer already ordered this product within the idempotency
+		// window, typically a retry after a lost response. Return that order
+		// with its current status instead of placing another.
+		order, err := h.orders.Get(c.Request.Context(), result.OrderID, userID)
+		if err != nil {
+			order = models.Order{ID: result.OrderID, ProductID: req.ProductID, Qty: req.Qty, Status: models.OrderStatusPending}
+		}
+		response.Success(c, http.StatusOK, "Purchase already placed", dto.PurchaseResponse{
+			OrderID:   order.ID,
+			Status:    order.Status,
+			ProductID: order.ProductID,
+			Qty:       order.Qty,
+		})
 		return
 	}
 

@@ -23,7 +23,7 @@ message queue, idempotency, and eventual consistency.
 
 | Component | Used for |
 | :--- | :--- |
-| 🧠 **Redis** | Live stock counters, per-buyer idempotency keys, and the login cache |
+| 🧠 **Redis** | Live stock counters, per-buyer idempotency claims, the order outbox, pending orders, and the login cache |
 | 📨 **RabbitMQ** | Order queue between the purchase service and the worker |
 | 💾 **PostgreSQL** | Durable storage for users, products and orders |
 
@@ -77,7 +77,7 @@ graph LR
     AG -->|login cache| R
     AG -->|users, orders| DB
     AG -->|internal token| PS
-    PS -->|atomic stock + idempotency| R
+    PS -->|atomic reservation + outbox| R
     PS -->|order.created| MQ
     MQ --> W
     W -->|insert order + deduct stock| DB
@@ -88,24 +88,41 @@ graph LR
 1. **🔐 Login with a cache-aside pattern.** The gateway looks up credentials in
    Redis first. On a miss it reads PostgreSQL and caches the result for 1 hour,
    so a login spike does not overload the database.
-2. **🧠 Atomic stock reservation.** The purchase service checks and decrements
-   stock in one **Lua script** inside Redis. Redis runs the script as a single
-   step, so even 1,000 requests in the same millisecond cannot take stock below
-   zero.
-3. **🔁 Idempotency.** Before reserving stock, the service sets a Redis key
-   `purchase:{user}:{product}` with `SETNX` and a 2-minute TTL. A double-click or
-   resubmission finds the key already set and gets `409 Duplicate purchase`.
-4. **📨 Asynchronous processing.** Once stock is reserved, the order event is
-   published to RabbitMQ with publisher confirms, and the buyer gets
-   `202 Accepted` right away. If publishing fails, the reserved stock and the
-   idempotency key are rolled back.
+2. **🧠 One atomic reservation.** A purchase is placed by a single **Lua
+   script** inside Redis. Redis runs the script as one step, so its writes
+   happen together or not at all. The script:
+   - checks the buyer's idempotency claim `purchase:{user}:{product}`,
+   - checks and decrements stock, so even 1,000 requests in the same
+     millisecond cannot take it below zero,
+   - stores the claim with the new order ID (2-minute TTL),
+   - writes the order event to an **outbox** (`orders:outbox`),
+   - and keeps a **pending copy** of the order (`order:pending:{id}`).
+3. **🔁 Idempotency.** A double-click or a retry within 2 minutes finds the
+   claim and gets **the original order back** (`200 Purchase already placed`),
+   without reserving more stock. A client whose response was lost can retry
+   safely.
+4. **📨 Asynchronous processing with an outbox.** The event is published to
+   RabbitMQ with publisher confirms, removed from the outbox once confirmed, and
+   the buyer gets `202 Accepted`. If publishing fails, the reservation is
+   rolled back. If the service **crashes** mid-way, the event is still in the
+   outbox. A background relay publishes any event older than 30 seconds, so
+   reserved stock is never stranded.
 5. **💾 Eventual consistency.** The order worker inserts the order and deducts
    stock in PostgreSQL in a single transaction. `ON CONFLICT (id) DO NOTHING`
    makes a redelivered message harmless, so RabbitMQ's at-least-once delivery
    never creates a duplicate order.
-6. **🚫 Exactly-once cancellation.** Cancelling flips the order status and returns
+6. **👀 Pending orders are visible.** Until the worker stores an order,
+   `GET /orders/:id` reads the pending copy from Redis and reports `PENDING`
+   instead of `404`.
+7. **🚫 Exactly-once cancellation.** Cancelling flips the order status and returns
    its stock in one transaction. Only one request can ever cancel a given order,
-   so stock is never returned twice.
+   so stock is never returned twice. An order that is still pending cannot be
+   cancelled yet (`409`, retry in a moment).
+8. **🔄 Safe stock loading.** Stock counters are copied from PostgreSQL to Redis
+   at startup with `SETNX`, so only products without a counter are loaded. A
+   restart never overwrites a live counter, which already accounts for orders
+   still in the queue. New products can be loaded without a restart through
+   `POST /internal/stock/load`.
 
 ## 🔄 User Flow
 
@@ -127,16 +144,18 @@ sequenceDiagram
 
     U->>AG: POST /purchase (Bearer token)
     AG->>PS: forward (buyer ID from token)
-    PS->>R: SETNX idempotency key
-    PS->>R: Lua: check & decrement stock
-    PS->>MQ: publish order.created
+    PS->>R: Lua (atomic): claim + decrement stock + outbox + pending copy
+    PS->>MQ: publish order.created (wait for confirm)
+    PS->>R: remove from outbox
     AG-->>U: 202 Accepted, status PENDING
 
     MQ->>W: deliver event
     W->>DB: insert order + deduct stock (1 transaction)
 
     U->>AG: GET /orders/:id
-    AG-->>U: status SUCCESS
+    AG->>DB: read order
+    AG->>PS: (not stored yet?) read pending copy
+    AG-->>U: status PENDING or SUCCESS
 
     U->>AG: DELETE /orders/:id
     AG->>DB: mark CANCELLED + restore stock (1 transaction)
@@ -178,11 +197,11 @@ All responses share one envelope:
 
 | Status | Meaning |
 | :--- | :--- |
-| `200` / `201` / `202` | OK / account created / purchase accepted (`PENDING`) |
+| `200` / `201` / `202` | OK (also a repeated purchase, returning the original order) / account created / purchase accepted (`PENDING`) |
 | `400` | Invalid body or value |
 | `401` | Missing or invalid token, wrong credentials |
 | `404` | Unknown product, or an order that is not yours |
-| `409` | Duplicate purchase, out of stock, email taken, already cancelled |
+| `409` | Out of stock, email taken, already cancelled, cancelling an order that is still pending |
 | `429` | Rate limit exceeded (120 requests/minute per client) |
 | `503` | A dependency is unavailable |
 
@@ -211,11 +230,14 @@ docker compose up --build -d          # Redis, RabbitMQ, PostgreSQL + 3 services
                                       # (the schema is applied automatically)
 
 cd scripts && go run . && cd ..       # seed demo products & users, prints product IDs
-docker compose restart purchase-service   # reload Redis stock from the seeded products
+docker compose restart purchase-service   # load Redis stock for the seeded products
 ```
 
-> The purchase service copies stock from PostgreSQL into Redis **at startup**,
-> so restart it after seeding or after changing stock in the database.
+> The purchase service loads stock from PostgreSQL into Redis for products that
+> do not have a counter yet. It does this at startup, and whenever
+> `POST /internal/stock/load` is called with the internal token. Existing
+> counters are never overwritten, so to reset stock after re-seeding, delete
+> the `product_stock:*` keys first.
 
 ### 2b. 🛠️ Run without Docker
 
@@ -301,7 +323,8 @@ ORDER_ID=$(curl -s -X POST $BASE/purchase -H "Authorization: Bearer $TOKEN" \
 
 **4. 🔍 Check the order**
 
-The status becomes `SUCCESS` once the worker has stored the order.
+Right after purchasing the status may still be `PENDING`. It becomes
+`SUCCESS` once the worker has stored the order, usually within milliseconds.
 
 ```bash
 curl -s $BASE/orders/$ORDER_ID -H "Authorization: Bearer $TOKEN"
@@ -331,7 +354,7 @@ Run these after the happy path, using the same variables.
 
 | # | Case | Request | Expected |
 | :--- | :--- | :--- | :--- |
-| A | 🔁 Duplicate purchase (within the 2-minute idempotency window) | Repeat step 3 | `409` `Duplicate purchase request` |
+| A | 🔁 Repeated purchase (within the 2-minute idempotency window) | Repeat step 3 | `200` `Purchase already placed`, **same `order_id`**, no extra stock taken |
 | B | 📉 Out of stock | Buy `qty: 9` of **MacBook Air M3** (seeded with 8) | `409` `Out of stock` |
 | C | 🔢 Invalid quantity | `qty: 0` or `qty: 11` | `400` `Invalid request` |
 | D | ⛔ No token | `POST /purchase` without `Authorization` | `401` `Authorization required` |
@@ -341,7 +364,7 @@ Run these after the happy path, using the same variables.
 | H | ⏳ Rate limit | 130 requests within a minute | `429` `Rate limit exceeded` |
 
 ```bash
-# A. duplicate purchase
+# A. repeated purchase: returns the same order_id as step 3
 curl -s -X POST $BASE/purchase -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d "{\"product_id\":\"$PRODUCT_ID\",\"qty\":1}"
 
@@ -388,7 +411,10 @@ the suite checks:
 | :--- | :--- |
 | 🛒 Purchase | Order is persisted and stock deducted in Redis and PostgreSQL; invalid requests rejected; refused when stock is short |
 | 🔥 Concurrency | **60 concurrent buyers vs 15 units → exactly 15 orders**, no oversell |
-| 🔁 Idempotency | Duplicate purchase refused; allowed again after the TTL expires |
+| 🔁 Idempotency | Repeated purchase returns the original order without taking stock; allowed again after the TTL expires |
+| 📤 Outbox | An order left in the outbox by a crash is still delivered and stored; a failed publish is fully rolled back |
+| 👀 Pending orders | Readable as `PENDING` before the worker stores them, only by their owner; cancelling one asks to retry |
+| 🔄 Stock loading | New products are loaded without a restart; live counters are never overwritten |
 | 🚫 Cancellation | Stock restored in both stores; exactly once even under concurrent cancels |
 | 🔒 Security | Protected routes need a token; orders are private to their owner; purchase service rejects callers without the internal token |
 | 🔑 Auth | Bad credentials rejected; duplicate and weak signups rejected |

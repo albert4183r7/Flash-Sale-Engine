@@ -30,7 +30,7 @@ func Setup(cfg *config.Config, db *sql.DB, cache *redis.Client) (*gin.Engine, *m
 	purchaseClient := client.NewPurchase(cfg.PurchaseServiceURL, cfg.InternalToken)
 
 	authService := service.NewAuth(users, cache, cfg.JWTSecret, cfg.TokenTTL, cfg.CredentialCacheTTL)
-	orderService := service.NewOrder(orders, stockRestorer{purchaseClient})
+	orderService := service.NewOrder(orders, purchaseClient, purchaseClient)
 
 	health := handler.NewHealthHandler(func(c *gin.Context) error {
 		return db.PingContext(c.Request.Context())
@@ -44,7 +44,7 @@ func Setup(cfg *config.Config, db *sql.DB, cache *redis.Client) (*gin.Engine, *m
 		auth.POST("/login", authHandler.Login)
 	}
 
-	purchaseHandler := handler.NewPurchaseHandler(purchaseClient)
+	purchaseHandler := handler.NewPurchaseHandler(purchaseClient, orderService)
 	orderHandler := handler.NewOrderHandler(orderService)
 
 	protected := r.Group("/", middleware.JWTAuth(cfg.JWTSecret))
@@ -56,7 +56,3 @@ func Setup(cfg *config.Config, db *sql.DB, cache *redis.Client) (*gin.Engine, *m
 
 	return r, limiter
 }
-
-// stockRestorer adapts the purchase service client to the order service's
-// narrow StockRestorer dependency.
-type stockRestorer struct{ *client.Purchase }

@@ -40,15 +40,24 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 		return
 	}
 
-	orderID, err := h.purchases.Process(c.Request.Context(), req.UserID, req.ProductID, req.Qty)
+	placed, err := h.purchases.Process(c.Request.Context(), req.UserID, req.ProductID, req.Qty)
 	if err != nil {
 		status, message, detail := describeFailure(err)
 		response.Error(c, status, message, detail)
 		return
 	}
 
+	if placed.Duplicate {
+		// A resubmission, typically a retry after a lost response. Answering
+		// with the original order lets the client carry on as if the first
+		// response had arrived.
+		response.Success(c, http.StatusOK, "Purchase already placed", gin.H{
+			"order_id": placed.OrderID,
+		})
+		return
+	}
 	response.Success(c, http.StatusAccepted, "Purchase accepted and queued for processing", gin.H{
-		"order_id": orderID,
+		"order_id": placed.OrderID,
 	})
 }
 
@@ -58,8 +67,6 @@ func (h *PurchaseHandler) Purchase(c *gin.Context) {
 // returned, because they name internal hosts and keys.
 func describeFailure(err error) (status int, message, detail string) {
 	switch {
-	case errors.Is(err, service.ErrDuplicatePurchase):
-		return http.StatusConflict, "Duplicate purchase request", err.Error()
 	case errors.Is(err, service.ErrOutOfStock):
 		return http.StatusConflict, "Out of stock", err.Error()
 	case errors.Is(err, service.ErrProductUnknown):

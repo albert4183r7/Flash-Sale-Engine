@@ -57,6 +57,9 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	case errors.Is(err, service.ErrOrderNotFound):
 		response.Error(c, http.StatusNotFound, "Order not found",
 			"No such order exists for this account")
+	case errors.Is(err, service.ErrOrderPending):
+		response.Error(c, http.StatusConflict, "Order is still being processed",
+			"Try again in a moment")
 	case errors.Is(err, service.ErrOrderNotCancellable):
 		response.Error(c, http.StatusConflict, "Order cannot be cancelled",
 			"This order has already been cancelled")

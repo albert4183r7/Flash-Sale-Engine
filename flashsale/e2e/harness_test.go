@@ -111,6 +111,10 @@ func runStack(m *testing.M) (int, error) {
 		"RATE_LIMIT_REQUESTS=100000",
 		"RATE_LIMIT_WINDOW=1m",
 		"IDEMPOTENCY_TTL=3s",
+		// Short relay timings so the outbox test does not wait for the
+		// production defaults.
+		"OUTBOX_RELAY_INTERVAL=500ms",
+		"OUTBOX_RETRY_AFTER=2s",
 	)
 
 	// The worker and the purchase service must be up before the gateway, which
