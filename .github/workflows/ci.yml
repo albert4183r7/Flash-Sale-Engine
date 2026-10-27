@@ -59,7 +59,9 @@ jobs:
           done
 
   test:
-    name: Tests
+    # Kept as "Integration Test": branch protection on main requires a check
+    # with this name, so renaming the job would block every pull request.
+    name: Integration Test
     runs-on: ubuntu-latest
 
     services:
